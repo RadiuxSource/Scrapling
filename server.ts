@@ -513,7 +513,16 @@ app.get('/api/settings', (req, res) => {
       const fileData = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
       settings = { ...settings, ...fileData };
     }
-    res.json({ success: true, settings });
+    const safeSettings = {
+  ...settings,
+  telegram_bot_token: '',
+  telegram_api_hash: '',
+  telegram_credentials_configured: Boolean(
+    settings.telegram_bot_token && settings.telegram_chat_id
+  )
+};
+
+res.json({ success: true, settings: safeSettings });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
