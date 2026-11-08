@@ -418,11 +418,11 @@ class MediaInspector:
 
         try:
             # Import lazily so normal scraping does not require browser startup.
-            from scrapling.fetchers import DynamicFetcher
+            from scrapling.fetchers import StealthyFetcher
         except Exception as exc:
             logger.warning(
                 "Emergency browser recovery unavailable: "
-                "Scrapling DynamicFetcher is not installed (%s)", exc
+                "Scrapling StealthyFetcher is not installed (%s)", exc
             )
             return recovered
 
@@ -447,7 +447,7 @@ class MediaInspector:
                 root_url
             )
 
-            browser_response = DynamicFetcher.fetch(
+            browser_response = StealthyFetcher.fetch(
                 root_url,
                 headless=True,
                 timeout=max(15000, min(self.timeout * 1000, 30000)),
