@@ -726,9 +726,14 @@ app.post('/api/nonstop-queue/stop', (req, res) => {
   // 2. Kill any spawned child processes (FFmpeg, yt-dlp, python engine)
   try {
     const killer = spawn('pkill', ['-9', '-f', 'engine.runner|ffmpeg|yt-dlp']);
-    killer.on('close', () => {
-      addLog('info', 'Subprocess tree termination complete');
-    });
+
+killer.on('close', () => {
+  addLog('info', 'Subprocess tree termination complete');
+});
+
+killer.on('error', (err) => {
+  addLog('warn', `Could not run pkill: ${err.message}`);
+});
   } catch (err) {
     // ignore
   }
