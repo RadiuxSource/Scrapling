@@ -530,7 +530,10 @@ res.json({ success: true, settings: safeSettings });
 
 app.post('/api/settings', (req, res) => {
   try {
-    const newSettings = req.body || {};
+    const newSettings = { ...(req.body || {}) };
+
+delete newSettings.telegram_bot_token;
+delete newSettings.telegram_api_hash;
     let current = {};
     if (fs.existsSync(SETTINGS_FILE)) {
       current = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
@@ -538,7 +541,16 @@ app.post('/api/settings', (req, res) => {
     const merged = { ...current, ...newSettings };
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2));
     addLog('info', 'Updated configuration settings');
-    res.json({ success: true, settings: merged });
+   const safeSettings = {
+  ...merged,
+  telegram_bot_token: '',
+  telegram_api_hash: '',
+  telegram_credentials_configured: Boolean(
+    process.env.TELEGRAM_BOT_TOKEN || merged.telegram_bot_token
+  )
+};
+
+res.json({ success: true, settings: safeSettings });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
