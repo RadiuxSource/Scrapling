@@ -3,3 +3,4 @@ scrapling
 requests
 python-dotenv
 curl_cffi
+patchright
