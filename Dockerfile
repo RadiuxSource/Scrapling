@@ -22,6 +22,8 @@ ENV PATH="/opt/venv/bin:${PATH}"
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --upgrade "scrapling[fetchers]" \
+    && python -c "from scrapling.fetchers import DynamicFetcher; print('DynamicFetcher import OK')" \
     && scrapling install
 
 COPY . .
