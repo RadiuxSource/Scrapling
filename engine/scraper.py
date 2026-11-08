@@ -2,6 +2,7 @@ import re
 import json
 import logging
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -295,6 +296,26 @@ class MediaInspector:
                     item["url"], clean_url, report["page_title"], item.get("poster")
                 ))
 
+                # ---------------------------------------------------------
+        # EMERGENCY FALLBACK: ONLY WHEN NORMAL EXTRACTION FINDS ZERO
+        # ---------------------------------------------------------
+        if len(report["videos"]) == 0:
+            logger.warning(
+                "Normal extraction returned ZERO videos. "
+                "Activating emergency redirect recovery."
+            )
+
+            recovered = self._zero_video_redirect_recovery(
+                clean_url,
+                discovered_list
+            )
+
+            if recovered:
+                report["videos"].extend(recovered)
+                report["detected_players"].append(
+                    "Emergency Redirect Recovery"
+                )
+
         # Deduplicate videos by media_url and title
         unique_videos = []
         seen_urls = set()
@@ -310,7 +331,76 @@ class MediaInspector:
         report["detected_players"] = sorted(list(set(report["detected_players"])))
 
         return report
+        def _resolve_http_redirect(self, target_url: str) -> Optional[str]:
+        """
+        Resolve ordinary HTTP redirects.
+        Called only by the zero-video recovery fallback.
+        """
+        try:
+            parsed = urllib.parse.urlparse(target_url)
 
+            if parsed.scheme not in ("http", "https"):
+                return None
+
+            request = urllib.request.Request(
+                target_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+                    )
+                }
+            )
+
+            with urllib.request.urlopen(request, timeout=8) as response:
+                return response.geturl()
+
+        except Exception as e:
+            logger.debug(
+                f"Redirect recovery could not resolve {target_url}: {e}"
+            )
+            return None
+
+    def _zero_video_redirect_recovery(
+        self,
+        root_url: str,
+        discovered_urls: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Emergency fallback: resolve redirects and retry extraction.
+        Never called when normal extraction finds videos.
+        """
+        recovered_videos = []
+        candidates = list(dict.fromkeys([root_url] + discovered_urls))
+
+        # Keep emergency recovery limited.
+        for original_url in candidates[:12]:
+            final_url = self._resolve_http_redirect(original_url)
+
+            if not final_url or final_url == original_url:
+                continue
+
+            logger.warning(
+                f"ZERO-VIDEO FALLBACK: redirect detected: "
+                f"{original_url} -> {final_url}"
+            )
+
+            try:
+                videos = self._inspect_single_subpage(final_url)
+
+                if videos:
+                    recovered_videos.extend(videos)
+                    logger.info(
+                        f"ZERO-VIDEO FALLBACK recovered "
+                        f"{len(videos)} video(s) from {final_url}"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"ZERO-VIDEO FALLBACK failed for {final_url}: {e}"
+                )
+
+        return recovered_videos
     def _inspect_single_subpage(self, sub_url: str) -> List[Dict[str, Any]]:
         """
         Inspects an individual discovered video subpage to extract playable media.
