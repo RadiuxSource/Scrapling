@@ -1,0 +1,6 @@
+{
+  "name": "Vortex Video Scraper & Downloader",
+  "description": "Universal video inspection, stream sniffer, and automated MP4 downloader powered by Scrapling, yt-dlp, and FFmpeg with Telegram integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
