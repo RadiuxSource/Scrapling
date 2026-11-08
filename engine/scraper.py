@@ -401,30 +401,345 @@ class MediaInspector:
                 )
 
         return recovered_videos
+        
+        
+        
     def _zero_video_browser_recovery(
-        self,
-        root_url: str,
-        discovered_urls: List[str]
-    ) -> List[Dict[str, Any]]:
-        """
-        Browser-only emergency recovery.
+    self,
+    root_url: str,
+    discovered_urls: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Domain-independent browser recovery.
 
-        This runs only after the normal extraction path returns zero videos.
-        It renders JavaScript and inspects the resulting DOM. It does NOT click
-        video links or advertising elements. Automatically opened pop-up tabs
-        are closed so the original page remains available for inspection.
-        """
-        recovered: List[Dict[str, Any]] = []
+    Runs only after normal extraction finds zero videos.
+    Collects likely video-card links, including external domains,
+    navigates to them directly, follows normal redirects, and
+    inspects the resulting pages for playable media.
+    """
+    recovered: List[Dict[str, Any]] = []
+
+    try:
+        from scrapling.fetchers import StealthyFetcher
+    except Exception as exc:
+        logger.warning(
+            "Browser recovery unavailable: %s", exc
+        )
+        return recovered
+
+    def register_popup_handler(page):
+        def close_popup(popup):
+            try:
+                popup.close()
+                logger.info(
+                    "Recovery closed an unsolicited popup tab."
+                )
+            except Exception as exc:
+                logger.debug("Popup close failed: %s", exc)
+
+        page.on("popup", close_popup)
+
+    def inspect_rendered_page(page, source_url):
+        """Extract media from the page currently open in the browser."""
+        found = []
 
         try:
-            # Import lazily so normal scraping does not require browser startup.
-            from scrapling.fetchers import StealthyFetcher
+            final_url = page.url
+            title = page.title() or "Detected Video"
+
+            html = page.content()
+
+            # Inspect HTML5 video elements and their source elements.
+            video_items = page.locator("video").evaluate_all(
+                """videos => videos.map(v => ({
+                    src: v.getAttribute('src'),
+                    poster: v.getAttribute('poster'),
+                    sources: Array.from(v.querySelectorAll('source'))
+                        .map(s => s.getAttribute('src'))
+                        .filter(Boolean)
+                }))"""
+            )
+
+            for item in video_items:
+                poster = item.get("poster")
+                poster = (
+                    urllib.parse.urljoin(final_url, poster)
+                    if poster else None
+                )
+
+                media_urls = []
+
+                if item.get("src"):
+                    media_urls.append(item["src"])
+
+                media_urls.extend(item.get("sources", []))
+
+                for media_url in media_urls:
+                    absolute_url = urllib.parse.urljoin(
+                        final_url, media_url
+                    )
+
+                    if absolute_url.startswith(("http://", "https://")):
+                        found.append(
+                            self._synthesize_video_item(
+                                absolute_url,
+                                final_url,
+                                title,
+                                poster
+                            )
+                        )
+
+            # Inspect media URLs present in page HTML and player scripts.
+            for media_url in self._sniff_streams_from_html(
+                html, final_url
+            ):
+                found.append(
+                    self._synthesize_video_item(
+                        media_url,
+                        final_url,
+                        title,
+                        None
+                    )
+                )
+
+            logger.info(
+                "Inspected destination %s: found %d media candidate(s).",
+                final_url,
+                len(found)
+            )
+
         except Exception as exc:
             logger.warning(
-                "Emergency browser recovery unavailable: "
-                "Scrapling StealthyFetcher is not installed (%s)", exc
+                "Could not inspect destination %s: %s",
+                source_url,
+                exc
             )
-            return recovered
+
+        return found
+
+    def collect_video_links(page):
+        """Collect likely video-card links without clicking them."""
+        links = []
+
+        try:
+            anchors = page.locator("a").evaluate_all(
+                """items => items.map(a => ({
+                    href: a.href,
+                    text: (a.innerText || '').trim(),
+                    className: a.className || '',
+                    title: a.getAttribute('title') || '',
+                    aria: a.getAttribute('aria-label') || '',
+                    hasImage: !!a.querySelector('img, picture'),
+                    hasVideo: !!a.querySelector('video')
+                }))"""
+            )
+
+            for item in anchors:
+                href = item.get("href", "").strip()
+
+                if not href.startswith(("http://", "https://")):
+                    continue
+
+                parsed = urllib.parse.urlparse(href)
+
+                if parsed.scheme not in ("http", "https"):
+                    continue
+
+                description = " ".join([
+                    item.get("text", ""),
+                    item.get("className", ""),
+                    item.get("title", ""),
+                    item.get("aria", "")
+                ]).lower()
+
+                # Avoid obvious non-video and advertising destinations.
+                blocked_words = (
+                    "advert", "sponsor", "banner", "popup",
+                    "doubleclick", "analytics", "tracking"
+                )
+
+                if any(word in href.lower() for word in blocked_words):
+                    continue
+
+                if any(word in description for word in blocked_words):
+                    continue
+
+                video_indicators = (
+                    "video", "watch", "play", "movie",
+                    "episode", "clip", "player", "film"
+                )
+
+                looks_like_video = (
+                    any(word in description for word in video_indicators)
+                    or any(pattern.search(href) for pattern in VIDEO_PATH_PATTERNS)
+                    or item.get("hasVideo")
+                    or item.get("hasImage")
+                )
+
+                if looks_like_video:
+                    links.append(href)
+
+        except Exception as exc:
+            logger.warning("Video-link discovery failed: %s", exc)
+
+        return list(dict.fromkeys(links))
+
+    def browser_recovery_action(page):
+        # Give the listing page a short, bounded time to render.
+        page.wait_for_timeout(1200)
+
+        candidates = collect_video_links(page)
+
+        # Include links discovered by the normal parser.
+        candidates.extend(discovered_urls)
+        candidates = list(dict.fromkeys(candidates))
+
+        logger.info(
+            "Browser recovery discovered %d candidate video links.",
+            len(candidates)
+        )
+
+        # Inspect the original page too.
+        recovered.extend(
+            inspect_rendered_page(page, root_url)
+        )
+
+        # Visit a maximum of 12 candidate destinations.
+        for index, candidate in enumerate(candidates[:12], start=1):
+            if recovered:
+                break
+
+            logger.warning(
+                "Browser recovery attempt %d/12: %s",
+                index,
+                candidate
+            )
+
+            try:
+                response = page.goto(
+                    candidate,
+                    wait_until="domcontentloaded",
+                    timeout=15000
+                )
+
+                status = (
+                    response.status
+                    if response is not None else None
+                )
+
+                logger.info(
+                    "Destination attempt %d returned HTTP %s; "
+                    "browser URL: %s",
+                    index,
+                    status,
+                    page.url
+                )
+
+                # Allow JavaScript-based players a short time to load.
+                page.wait_for_timeout(1500)
+
+                # Inspect even if the server returned an error status.
+                # Do not attempt to defeat an access-denied response.
+                recovered.extend(
+                    inspect_rendered_page(page, candidate)
+                )
+
+                # Try the existing supported yt-dlp extractors.
+                if not recovered:
+                    try:
+                        extracted = self._inspect_with_ytdlp(page.url)
+
+                        if extracted:
+                            recovered.extend(extracted)
+                            logger.info(
+                                "yt-dlp recovered %d video(s) "
+                                "from destination %s",
+                                len(extracted),
+                                page.url
+                            )
+                    except Exception as extract_error:
+                        logger.debug(
+                            "yt-dlp destination inspection failed: %s",
+                            extract_error
+                        )
+
+            except Exception as exc:
+                logger.warning(
+                    "Destination attempt %d failed for %s: %s",
+                    index,
+                    candidate,
+                    exc
+                )
+
+        return page
+
+    try:
+        logger.warning(
+            "Starting zero-video browser recovery for %s",
+            root_url
+        )
+
+        browser_response = StealthyFetcher.fetch(
+            root_url,
+            headless=True,
+            timeout=max(15000, min(self.timeout * 1000, 30000)),
+            network_idle=False,
+            disable_resources=False,
+            page_setup=register_popup_handler,
+            page_action=browser_recovery_action
+        )
+
+        # Also inspect the final response returned by Scrapling.
+        if browser_response is not None and not recovered:
+            final_url = (
+                getattr(browser_response, "url", None) or root_url
+            )
+            html = getattr(browser_response, "text", "") or ""
+
+            title_nodes = browser_response.css(
+                "title::text"
+            ).getall()
+
+            title = (
+                title_nodes[0].strip()
+                if title_nodes else "Detected Video"
+            )
+
+            for media_url in self._sniff_streams_from_html(
+                html, final_url
+            ):
+                recovered.append(
+                    self._synthesize_video_item(
+                        media_url,
+                        final_url,
+                        title,
+                        None
+                    )
+                )
+
+    except Exception as exc:
+        logger.warning(
+            "Emergency browser recovery failed: %s", exc
+        )
+
+    # Deduplicate results.
+    unique = []
+    seen_media = set()
+
+    for video in recovered:
+        media_url = video.get("media_url") or video.get("page_url")
+
+        if media_url and media_url not in seen_media:
+            seen_media.add(media_url)
+            unique.append(video)
+
+    logger.info(
+        "Emergency browser recovery finished: %d video(s) recovered.",
+        len(unique)
+    )
+
+    return unique
+
 
         def register_popup_handler(page):
             def close_popup(popup):
