@@ -1,6 +1,9 @@
 yt-dlp
-scrapling
+scrapling[all]
 requests
 python-dotenv
 curl_cffi
 patchright
+aiohttp
+browserforge
+telethon
