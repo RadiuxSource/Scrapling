@@ -776,10 +776,22 @@ class MediaInspector:
                 # here performs a synchronous Playwright protocol request from
                 # inside a protocol event callback; with Patchright this can
                 # deadlock the sync driver after page.goto() returns.
-                is_media_url = bool(re.search(
-                    r"\.(?:m3u8|mpd|mp4|webm|mov|mkv)(?:[?#]|$)",
+                # Some players expose signed/opaque stream endpoints without a
+                # filename extension (for example /get_video?id=... or
+                # /hls/playlist?token=...). Capture these only when the URL
+                # itself carries a strong media/manifest hint. Keep this
+                # callback URL-only: synchronous header access can deadlock
+                # Patchright's event loop.
+                has_media_extension = bool(re.search(
+                    r"\\.(?:m3u8|mpd|mp4|webm|mov|mkv|m4v|ts)(?:[?#]|$)",
                     lowered,
                 ))
+                media_url_hint = bool(re.search(
+                    r"(?:^|[/_.?&=-])(?:video|videos|stream|media|hls|dash|manifest|playlist|master|"
+                    r"get_video|video_file|playback|source)(?:[/_.?&=-]|$)",
+                    lowered,
+                ))
+                is_media_url = has_media_extension or media_url_hint
                 if parsed.scheme in ("http", "https") and host and is_media_url:
                     if response_url not in network_media_urls:
                         network_media_urls.append(response_url)
