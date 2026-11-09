@@ -266,7 +266,7 @@ function terminateProcessEntry(entry: ActiveProcessEntry) {
 }
 
 // Helper to execute Python runner
-function runPythonRunner(action: string, payload: any): Promise<any> {
+function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<any> {
   return new Promise((resolve, reject) => {
     addLog('info', `Executing runner [${action}]`);
     const proc = spawn('python3', ['-m', 'engine.runner', action], {
@@ -286,6 +286,14 @@ function runPythonRunner(action: string, payload: any): Promise<any> {
     let stdoutData = '';
     let stderrData = '';
     let isTerminated = false;
+    let timedOut = false;
+    const timeoutHandle = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          addLog('error', 'Runner [' + action + '] exceeded its ' + Math.round(timeoutMs / 1000) + ' second time limit; stopping it.');
+          try { proc.kill('SIGKILL'); } catch { /* already exited */ }
+        }, timeoutMs)
+      : undefined;
 
     proc.stdout.on('data', (chunk) => {
       stdoutData += chunk.toString();
@@ -304,6 +312,10 @@ function runPythonRunner(action: string, payload: any): Promise<any> {
 
     proc.on('close', (code, signal) => {
       activeProcesses.delete(runId);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (timedOut) {
+        return reject(new Error('Test operation timed out after ' + Math.round(timeoutMs / 1000) + ' seconds. Check the engine logs and try again.'));
+      }
 
       if (signal === 'SIGKILL' || signal === 'SIGTERM' || isTerminated) {
         addLog('warn', `Runner [${action}] terminated by user request`);
@@ -574,7 +586,7 @@ app.post('/api/test-website', async (req, res) => {
       telegram_chat_id,
       max_subpages: max_subpages !== undefined ? max_subpages : 20,
       subpage_offset: subpage_offset || 0,
-    });
+    }, 180000);
     res.json(result);
   } catch (err: any) {
     addLog('error', `Test website failed: ${err.message}`);
