@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
-import { ScraperConsole } from './components/ScraperConsole';
-import { QueueManager } from './components/QueueManager';
-import { FileManager } from './components/FileManager';
-import { TelegramHub } from './components/TelegramHub';
-import { LogsViewer } from './components/LogsViewer';
-import { VideoPlayerModal } from './components/VideoPlayerModal';
+import { lazy, Suspense } from 'react';
+
+const ScraperConsole = lazy(() => import('./components/ScraperConsole').then((m) => ({ default: m.ScraperConsole })));
+const QueueManager = lazy(() => import('./components/QueueManager').then((m) => ({ default: m.QueueManager })));
+const FileManager = lazy(() => import('./components/FileManager').then((m) => ({ default: m.FileManager })));
+const TelegramHub = lazy(() => import('./components/TelegramHub').then((m) => ({ default: m.TelegramHub })));
+const LogsViewer = lazy(() => import('./components/LogsViewer').then((m) => ({ default: m.LogsViewer })));
+const VideoPlayerModal = lazy(() => import('./components/VideoPlayerModal').then((m) => ({ default: m.VideoPlayerModal })));
 import {
   ScrapedVideo,
   InspectionReport,
@@ -503,6 +505,7 @@ export default function App() {
 
       {/* Main Workspace Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+        <Suspense fallback={<div className="min-h-[40vh] flex items-center justify-center text-sm text-slate-400" role="status">Loading workspace…</div>}>
         {activeTab === 'console' && (
           <ScraperConsole
             urlsInput={urlsInput}
@@ -579,6 +582,7 @@ export default function App() {
         {activeTab === 'logs' && (
           <LogsViewer logs={logs} onRefresh={fetchLogs} />
         )}
+        </Suspense>
       </main>
 
       {/* In-Browser HTML5 Video Player Modal */}
