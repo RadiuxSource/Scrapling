@@ -731,7 +731,10 @@ class MediaInspector:
             if (urllib.parse.urlparse(url).hostname or "").lower() == root_host
             and urllib.parse.urlparse(url).path.lower().startswith("/video/")
         ]
-        candidates = list(dict.fromkeys(same_site_video_urls))[:5]
+        # A single browser probe is sufficient for diagnosis. Repeated
+        # navigations to this host can stall Patchright and exhaust the
+        # test runner; the HTTP crawler has already fetched detail pages.
+        candidates = list(dict.fromkeys(same_site_video_urls))[:1]
 
         if not candidates:
             logger.warning(
@@ -893,13 +896,13 @@ class MediaInspector:
         try:
             with StealthySession(
                 headless=True,
-                timeout=10000,
+                timeout=6000,
                 network_idle=False,
                 load_dom=False,
                 disable_resources=False,
             ) as session:
                 page = session.context.new_page()
-                page.set_default_navigation_timeout(10000)
+                page.set_default_navigation_timeout(6000)
                 page.on("popup", close_unsolicited_popup)
                 page.on("response", capture_media_response)
 
@@ -920,7 +923,7 @@ class MediaInspector:
                         response = page.goto(
                             candidate,
                             wait_until="commit",
-                            timeout=10000,
+                            timeout=6000,
                         )
                         status = response.status if response is not None else None
                         logger.info(
@@ -932,7 +935,7 @@ class MediaInspector:
                         # A short bounded settling period allows inline player
                         # setup without waiting for ad/tracker network idle.
                         logger.info("Browser inspection stage: settling completed; beginning DOM inspection")
-                        page.wait_for_timeout(1200)
+                        page.wait_for_timeout(500)
                         # Do not issue further synchronous DOM protocol calls
                         # (page.content/evaluate/title) after commit navigation.
                         # On pages with continuously streaming ad/player requests,
