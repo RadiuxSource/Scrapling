@@ -933,8 +933,25 @@ class MediaInspector:
                         # setup without waiting for ad/tracker network idle.
                         logger.info("Browser inspection stage: settling completed; beginning DOM inspection")
                         page.wait_for_timeout(1200)
-                        logger.info("Browser inspection stage: starting rendered-page inspection")
-                        recovered.extend(inspect_rendered_page(page, candidate))
+                        # Do not issue further synchronous DOM protocol calls
+                        # (page.content/evaluate/title) after commit navigation.
+                        # On pages with continuously streaming ad/player requests,
+                        # Patchright can stall servicing these calls indefinitely.
+                        # The response listener above collects direct media URLs
+                        # while the page initializes, without querying the DOM.
+                        logger.info(
+                            "Browser network inspection completed for %s: "
+                            "%d media URL(s) observed; skipping blocking DOM snapshot.",
+                            page.url or candidate,
+                            len(network_media_urls),
+                        )
+                        for media_url in list(network_media_urls):
+                            recovered.append(
+                                self._synthesize_video_item(
+                                    media_url, page.url or candidate,
+                                    "Detected Video", None
+                                )
+                            )
 
                         # Avoid a second synchronous yt-dlp network extraction here.
                         # Every discovered detail page already went through the
