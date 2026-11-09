@@ -855,19 +855,11 @@ class MediaInspector:
                     )):
                         continue
                     iframe_checked += 1
-                    try:
-                        iframe_videos = self._inspect_with_ytdlp(iframe_url)
-                        if iframe_videos:
-                            found.extend(iframe_videos)
-                            logger.info(
-                                "Embedded player yielded %d video(s) from %s",
-                                len(iframe_videos), iframe_url,
-                            )
-                    except Exception as exc:
-                        logger.debug(
-                            "Embedded player inspection failed for %s: %s",
-                            iframe_url, exc,
-                        )
+                    # The browser has already loaded eligible iframe documents.
+                    # Their media requests are captured by the page response listener.
+                    # Do not run yt-dlp synchronously here: a slow embed extractor
+                    # can hold the whole test runner until its 180-second deadline.
+                    logger.debug("Observed embedded player frame: %s", iframe_url)
 
                 # Also use media URLs observed in actual browser responses;
                 # this catches players whose source is assigned after scripts run.
@@ -941,14 +933,9 @@ class MediaInspector:
                         page.wait_for_timeout(1200)
                         recovered.extend(inspect_rendered_page(page, candidate))
 
-                        if not recovered:
-                            extracted = self._inspect_with_ytdlp(page.url or candidate)
-                            if extracted:
-                                recovered.extend(extracted)
-                                logger.info(
-                                    "yt-dlp recovered %d video(s) from %s",
-                                    len(extracted), page.url or candidate,
-                                )
+                        # Avoid a second synchronous yt-dlp network extraction here.
+                        # Every discovered detail page already went through the
+                        # normal yt-dlp path before this zero-video-only fallback.
                     except Exception as exc:
                         logger.warning(
                             "Direct video-page attempt %d failed for %s: %s",
