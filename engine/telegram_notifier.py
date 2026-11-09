@@ -241,77 +241,93 @@ class TelegramNotifier:
 
         async def _run_upload():
             client = TelegramClient(MemorySession(), int(self.api_id), str(self.api_hash))
-            await client.start(bot_token=self.bot_token)
-
-            # Resolve target entity
-            target = self.chat_id
-            if target.startswith('-') or target.isdigit():
-                target = int(target)
-
-            entity = await client.get_input_entity(target)
-
-            p = Path(file_path)
-            file_size = p.stat().st_size
-            part_size = 512 * 1024  # 512KB MTProto max part size
-            total_parts = max(1, (file_size + part_size - 1) // part_size)
-            is_big = file_size > 10 * 1024 * 1024
-            file_id = random.randint(1, 2**63 - 1)
-
-            logger.info(f"FastTelethon parallel MTProto upload: {p.name} ({round(file_size/(1024*1024), 2)} MB, {total_parts} parts, 6 concurrent workers)...")
-
-            queue = asyncio.Queue()
-            for i in range(total_parts):
-                queue.put_nowait(i)
-
-            async def worker():
-                with open(file_path, "rb") as f:
-                    while not queue.empty():
-                        try:
-                            part_index = queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        f.seek(part_index * part_size)
-                        chunk = f.read(part_size)
-                        if not chunk:
-                            queue.task_done()
-                            break
-
-                        for attempt in range(3):
-                            try:
-                                if is_big:
-                                    req = SaveBigFilePartRequest(file_id, part_index, total_parts, chunk)
-                                else:
-                                    req = SaveFilePartRequest(file_id, part_index, chunk)
-                                await client(req)
-                                break
-                            except Exception as part_err:
-                                if attempt == 2:
-                                    logger.error(f"Part {part_index} failed after 3 retries: {part_err}")
-                                    raise
-                                await asyncio.sleep(0.5)
-
-                        queue.task_done()
-
-            worker_count = min(6, total_parts)
-            workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
-            await asyncio.gather(*workers)
-
-            if is_big:
-                file_handle = InputFileBig(id=file_id, parts=total_parts, name=p.name)
-            else:
-                file_handle = await client.upload_file(file_path)
-
             try:
+                await client.start(bot_token=self.bot_token)
+
+                target = self.chat_id
+                if target.startswith('-') or target.isdigit():
+                    target = int(target)
+                entity = await client.get_input_entity(target)
+
+                p = Path(file_path)
+                file_size = p.stat().st_size
+                part_size = 512 * 1024
+                total_parts = max(1, (file_size + part_size - 1) // part_size)
+                is_big = file_size > 10 * 1024 * 1024
+                file_id = random.randint(1, 2**63 - 1)
+
+                logger.info(
+                    "FastTelethon parallel MTProto upload: %s (%s MB, %d parts, 6 concurrent workers)...",
+                    p.name, round(file_size / (1024 * 1024), 2), total_parts,
+                )
+
+                queue = asyncio.Queue()
+                for i in range(total_parts):
+                    queue.put_nowait(i)
+
+                async def worker():
+                    with open(file_path, "rb") as f:
+                        while True:
+                            try:
+                                part_index = queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                return
+                            try:
+                                f.seek(part_index * part_size)
+                                chunk = f.read(part_size)
+                                if not chunk:
+                                    continue
+                                for attempt in range(3):
+                                    try:
+                                        if is_big:
+                                            req = SaveBigFilePartRequest(
+                                                file_id, part_index, total_parts, chunk
+                                            )
+                                        else:
+                                            req = SaveFilePartRequest(
+                                                file_id, part_index, chunk
+                                            )
+                                        await client(req)
+                                        break
+                                    except Exception as part_err:
+                                        if attempt == 2:
+                                            logger.error(
+                                                "Part %d failed after 3 retries: %s",
+                                                part_index, part_err,
+                                            )
+                                            raise
+                                        await asyncio.sleep(0.5 * (attempt + 1))
+                            finally:
+                                queue.task_done()
+
+                worker_count = min(6, total_parts)
+                workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
+                try:
+                    await asyncio.gather(*workers)
+                except Exception:
+                    for task in workers:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
+                    raise
+
+                if is_big:
+                    file_handle = InputFileBig(
+                        id=file_id, parts=total_parts, name=p.name
+                    )
+                else:
+                    file_handle = await client.upload_file(file_path)
+
                 msg = await client.send_file(
                     entity,
                     file_handle,
                     caption=caption[:1024],
-                    supports_streaming=True
+                    supports_streaming=True,
                 )
                 return msg.id
             finally:
-                # Always release the MTProto connection, even if upload/send
-                # fails after worker tasks have started.
+                # Release the MTProto connection even when startup, part
+                # transfer, or the final Telegram send fails.
                 await client.disconnect()
 
         loop = asyncio.new_event_loop()
