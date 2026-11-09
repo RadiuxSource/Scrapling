@@ -941,7 +941,7 @@ class MediaInspector:
                 root_url,
                 headless=True,
                 # Keep this last-resort attempt bounded; avoid three full retries.
-                timeout=12000,
+                timeout=30000,
                 retries=1,
                 retry_delay=0,
                 network_idle=False,
