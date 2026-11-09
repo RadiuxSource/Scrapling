@@ -753,6 +753,39 @@ class MediaInspector:
             except Exception as exc:
                 logger.debug("Popup close failed: %s", exc)
 
+        # Collect media responses emitted by the browser while a detail
+        # page and its embedded player initialize. This listener is attached
+        # only inside the zero-video recovery path.
+        network_media_urls: List[str] = []
+
+        def capture_media_response(response):
+            try:
+                response_url = response.url
+                parsed = urllib.parse.urlparse(response_url)
+                host = (parsed.hostname or "").lower()
+                lowered = response_url.lower()
+                if any(word in lowered for word in (
+                    "doubleclick", "googlesyndication", "adservice",
+                    "analytics", "tracking", "popads", "banner",
+                )):
+                    return
+                headers = response.headers or {}
+                content_type = str(headers.get("content-type", "")).lower()
+                is_media_url = bool(re.search(
+                    r"\\.(?:m3u8|mpd|mp4|webm|mov|mkv)(?:[?#]|$)",
+                    lowered,
+                ))
+                is_media_type = (
+                    content_type.startswith("video/")
+                    or "mpegurl" in content_type
+                    or "dash+xml" in content_type
+                )
+                if parsed.scheme in ("http", "https") and host and (is_media_url or is_media_type):
+                    if response_url not in network_media_urls:
+                        network_media_urls.append(response_url)
+            except Exception:
+                pass
+
         def inspect_rendered_page(page, source_url):
             found = []
             try:
@@ -795,9 +828,64 @@ class MediaInspector:
                         )
                     )
 
+                # Some sites keep the actual player in a third-party iframe.
+                # Inspect a small bounded set of iframe URLs with yt-dlp;
+                # never click page controls or follow popup/ad links.
+                iframe_items = page.locator("iframe").evaluate_all(
+                    """frames => frames.map(f => ({
+                        src: f.getAttribute('src') ||
+                             f.getAttribute('data-src') ||
+                             f.getAttribute('data-lazy-src')
+                    })).filter(x => x.src)"""
+                )
+                iframe_checked = 0
+                for iframe_item in iframe_items:
+                    if iframe_checked >= 3:
+                        break
+                    iframe_url = urllib.parse.urljoin(
+                        final_url, iframe_item.get("src", "")
+                    )
+                    parsed_iframe = urllib.parse.urlparse(iframe_url)
+                    lowered_iframe = iframe_url.lower()
+                    if parsed_iframe.scheme not in ("http", "https"):
+                        continue
+                    if any(word in lowered_iframe for word in (
+                        "advert", "sponsor", "banner", "popup",
+                        "doubleclick", "analytics", "tracking",
+                    )):
+                        continue
+                    iframe_checked += 1
+                    try:
+                        iframe_videos = self._inspect_with_ytdlp(iframe_url)
+                        if iframe_videos:
+                            found.extend(iframe_videos)
+                            logger.info(
+                                "Embedded player yielded %d video(s) from %s",
+                                len(iframe_videos), iframe_url,
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "Embedded player inspection failed for %s: %s",
+                            iframe_url, exc,
+                        )
+
+                # Also use media URLs observed in actual browser responses;
+                # this catches players whose source is assigned after scripts run.
+                for media_url in list(network_media_urls):
+                    found.append(
+                        self._synthesize_video_item(
+                            media_url, final_url, title, None
+                        )
+                    )
+
                 logger.info(
-                    "Inspected video detail page %s: found %d media candidate(s).",
-                    final_url, len(found),
+                    "Inspected video detail page %s: %d video element(s), "
+                    "%d iframe(s), %d browser media response(s), %d media candidate(s).",
+                    final_url,
+                    len(video_items),
+                    len(iframe_items),
+                    len(network_media_urls),
+                    len(found),
                 )
             except Exception as exc:
                 logger.warning(
@@ -820,6 +908,7 @@ class MediaInspector:
                 page = session.context.new_page()
                 page.set_default_navigation_timeout(10000)
                 page.on("popup", close_unsolicited_popup)
+                page.on("response", capture_media_response)
 
                 for index, candidate in enumerate(candidates, start=1):
                     if recovered:
@@ -830,6 +919,7 @@ class MediaInspector:
                         index, len(candidates), candidate,
                     )
                     try:
+                        network_media_urls.clear()
                         # "commit" returns after response headers arrive. Some
                         # sites keep parser-blocking scripts or ad resources open,
                         # so DOMContentLoaded may never fire even though the HTML
