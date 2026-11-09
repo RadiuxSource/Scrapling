@@ -752,10 +752,10 @@ class MediaInspector:
             if (urllib.parse.urlparse(url).hostname or "").lower() == root_host
             and urllib.parse.urlparse(url).path.lower().startswith("/video/")
         ]
-        # A single browser probe is sufficient for diagnosis. Repeated
-        # navigations to this host can stall Patchright and exhaust the
-        # test runner; the HTTP crawler has already fetched detail pages.
-        candidates = list(dict.fromkeys(same_site_video_urls))[:1]
+        # Probe a small bounded sample in one browser session. A single
+        # detail page may be an ad-heavy or broken entry; trying a few sibling
+        # pages improves recovery without reopening the entire crawl.
+        candidates = list(dict.fromkeys(same_site_video_urls))[:3]
 
         if not candidates:
             logger.warning(
@@ -781,9 +781,15 @@ class MediaInspector:
         # page and its embedded player initialize. This listener is attached
         # only inside the zero-video recovery path.
         network_media_urls: List[str] = []
+        network_responses = []
 
         def capture_media_response(response):
             try:
+                # Save response handles only. Read headers after the callback
+                # has returned to avoid synchronous Playwright calls inside
+                # Patchright's response event handler.
+                if len(network_responses) < 250:
+                    network_responses.append(response)
                 response_url = response.url
                 parsed = urllib.parse.urlparse(response_url)
                 host = (parsed.hostname or "").lower()
@@ -948,7 +954,7 @@ class MediaInspector:
                 disable_resources=False,
             ) as session:
                 page = session.context.new_page()
-                page.set_default_navigation_timeout(6000)
+                page.set_default_navigation_timeout(8000)
                 page.on("popup", close_unsolicited_popup)
                 page.on("response", capture_media_response)
 
@@ -962,6 +968,7 @@ class MediaInspector:
                     )
                     try:
                         network_media_urls.clear()
+                        network_responses.clear()
                         # "commit" returns after response headers arrive. Some
                         # sites keep parser-blocking scripts or ad resources open,
                         # so DOMContentLoaded may never fire even though the HTML
@@ -969,7 +976,7 @@ class MediaInspector:
                         response = page.goto(
                             candidate,
                             wait_until="commit",
-                            timeout=6000,
+                            timeout=8000,
                         )
                         status = response.status if response is not None else None
                         logger.info(
@@ -981,7 +988,55 @@ class MediaInspector:
                         # A short bounded settling period allows inline player
                         # setup without waiting for ad/tracker network idle.
                         logger.info("Browser inspection stage: settling completed; beginning DOM inspection")
-                        page.wait_for_timeout(500)
+                        page.wait_for_timeout(1800)
+
+                        # Inspect response metadata outside the event callback.
+                        # MIME types identify signed/extensionless media endpoints
+                        # that cannot be recognized from the URL alone.
+                        for observed in list(network_responses):
+                            try:
+                                observed_url = observed.url
+                                observed_status = observed.status
+                                observed_headers = observed.headers
+                                content_type = (
+                                    observed_headers.get("content-type", "")
+                                    .split(";", 1)[0].strip().lower()
+                                )
+                                parsed_observed = urllib.parse.urlparse(observed_url)
+                                path_query = (
+                                    (parsed_observed.path or "") + "?" +
+                                    (parsed_observed.query or "")
+                                ).lower()
+                                media_mime = (
+                                    content_type.startswith("video/")
+                                    or content_type in (
+                                        "application/vnd.apple.mpegurl",
+                                        "application/x-mpegurl",
+                                        "application/dash+xml",
+                                    )
+                                )
+                                if (
+                                    observed_status in (200, 206)
+                                    and media_mime
+                                    and parsed_observed.scheme in ("http", "https")
+                                    and observed_url not in network_media_urls
+                                ):
+                                    network_media_urls.append(observed_url)
+                                elif (
+                                    observed_status in (200, 206)
+                                    and content_type == "application/octet-stream"
+                                    and re.search(
+                                        r"(?:get[_-]?video|video[_-]?file|stream|hls|dash|manifest|playlist|media|source)",
+                                        path_query,
+                                    )
+                                    and observed_url not in network_media_urls
+                                ):
+                                    network_media_urls.append(observed_url)
+                            except Exception as header_exc:
+                                logger.debug(
+                                    "Could not inspect browser response metadata: %s",
+                                    header_exc,
+                                )
                         # Do not issue further synchronous DOM protocol calls
                         # (page.content/evaluate/title) after commit navigation.
                         # On pages with continuously streaming ad/player requests,
@@ -990,9 +1045,10 @@ class MediaInspector:
                         # while the page initializes, without querying the DOM.
                         logger.info(
                             "Browser network inspection completed for %s: "
-                            "%d media URL(s) observed; skipping blocking DOM snapshot.",
+                            "%d media URL(s) observed across %d response(s); skipping blocking DOM snapshot.",
                             page.url or candidate,
                             len(network_media_urls),
+                            len(network_responses),
                         )
                         for media_url in list(network_media_urls):
                             recovered.append(
