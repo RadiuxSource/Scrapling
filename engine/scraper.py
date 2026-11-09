@@ -731,7 +731,7 @@ class MediaInspector:
             if (urllib.parse.urlparse(url).hostname or "").lower() == root_host
             and urllib.parse.urlparse(url).path.lower().startswith("/video/")
         ]
-        candidates = list(dict.fromkeys(same_site_video_urls))[:20]
+        candidates = list(dict.fromkeys(same_site_video_urls))[:5]
 
         if not candidates:
             logger.warning(
@@ -812,13 +812,13 @@ class MediaInspector:
         try:
             with StealthySession(
                 headless=True,
-                timeout=15000,
+                timeout=10000,
                 network_idle=False,
                 load_dom=False,
                 disable_resources=False,
             ) as session:
                 page = session.context.new_page()
-                page.set_default_navigation_timeout(15000)
+                page.set_default_navigation_timeout(10000)
                 page.on("popup", close_unsolicited_popup)
 
                 for index, candidate in enumerate(candidates, start=1):
@@ -826,14 +826,18 @@ class MediaInspector:
                         break
 
                     logger.warning(
-                        "Direct video-page recovery attempt %d/%d: %s",
+                        "Direct video-page recovery attempt %d/%d (wait_until=commit): %s",
                         index, len(candidates), candidate,
                     )
                     try:
+                        # "commit" returns after response headers arrive. Some
+                        # sites keep parser-blocking scripts or ad resources open,
+                        # so DOMContentLoaded may never fire even though the HTML
+                        # document is already available for inspection.
                         response = page.goto(
                             candidate,
-                            wait_until="domcontentloaded",
-                            timeout=15000,
+                            wait_until="commit",
+                            timeout=10000,
                         )
                         status = response.status if response is not None else None
                         logger.info(
