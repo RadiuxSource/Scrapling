@@ -407,7 +407,7 @@ class MediaInspector:
                 "Normal extraction returned ZERO videos. Checking outbound player destinations."
             )
             external_recovered = self._zero_video_external_destination_recovery(
-                discovered_list
+                clean_url, discovered_list
             )
             if external_recovered:
                 report["videos"].extend(external_recovered)
@@ -511,7 +511,7 @@ class MediaInspector:
         return recovered_videos
 
     def _zero_video_external_destination_recovery(
-        self, discovered_urls: List[str],
+        self, root_url: str, discovered_urls: List[str],
     ) -> List[Dict[str, Any]]:
         """
         Last-resort, zero-video-only pass for detail pages whose player is
@@ -521,7 +521,7 @@ class MediaInspector:
         recovered: List[Dict[str, Any]] = []
         root_hosts = {
             (urllib.parse.urlparse(url).hostname or "").lower()
-            for url in discovered_urls
+            for url in [root_url] + discovered_urls
         }
         blocked_words = (
             "advert", "sponsor", "banner", "popup", "doubleclick",
@@ -588,7 +588,11 @@ class MediaInspector:
 
         # These pages are revisited only after the normal extractor returned
         # zero videos. Keep both the page count and destination count bounded.
-        for detail_url in discovered_urls[:20]:
+        # The external redirect may be attached to a card on the
+        # category/listing page, not to the individual detail pages.
+        # Inspect the root listing first, then a bounded sample of details.
+        pages_to_scan = list(dict.fromkeys([root_url] + discovered_urls[:20]))
+        for detail_url in pages_to_scan:
             try:
                 page = Fetcher.get(
                     detail_url,
