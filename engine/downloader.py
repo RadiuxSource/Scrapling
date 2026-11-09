@@ -111,9 +111,11 @@ class VideoDownloader:
         is_direct = any(url_lower.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS) or "wikimedia.org" in url_lower
 
         download_success = False
+        direct_attempted = False
 
         # Attempt 1: Direct stream download if recognized as direct media file
         if is_direct:
+            direct_attempted = True
             logger.info(f"Direct media file detected: {media_url}. Using streaming downloader.")
             try:
                 self._download_direct_stream(
@@ -143,25 +145,37 @@ class VideoDownloader:
                 download_success = True
             except Exception as ytdlp_err:
                 logger.warning(f"yt-dlp engine failed: {ytdlp_err}. Falling back to direct stream downloader...")
-                # Attempt 3: Fallback to direct stream downloader on any error (like 403 Forbidden)
-                try:
-                    self._download_direct_stream(
-                        media_url=media_url,
-                        safe_title=safe_title,
-                        timestamp=timestamp,
-                        final_filepath=final_filepath,
-                        report_progress=report_progress
-                    )
-                    download_success = True
-                except Exception as final_err:
-                    logger.error(f"All download attempts failed for {media_url}: {final_err}")
+                # A direct URL has already gone through the direct-stream
+                # pipeline above. Repeating the same transfer after yt-dlp
+                # fails only multiplies the wait without changing the request.
+                if not direct_attempted:
+                    try:
+                        self._download_direct_stream(
+                            media_url=media_url,
+                            safe_title=safe_title,
+                            timestamp=timestamp,
+                            final_filepath=final_filepath,
+                            report_progress=report_progress
+                        )
+                        download_success = True
+                    except Exception as final_err:
+                        logger.error(f"All download attempts failed for {media_url}: {final_err}")
+                        report_data["status"] = "failed"
+                        report_data["error"] = str(final_err)
+                        report_data["end_time"] = time.time()
+                        report_progress({
+                            "status": "failed",
+                            "completed": False,
+                            "error": str(final_err)
+                        })
+                else:
                     report_data["status"] = "failed"
-                    report_data["error"] = str(final_err)
+                    report_data["error"] = str(ytdlp_err)
                     report_data["end_time"] = time.time()
                     report_progress({
                         "status": "failed",
                         "completed": False,
-                        "error": str(final_err)
+                        "error": str(ytdlp_err)
                     })
 
         # Final verification
@@ -260,13 +274,25 @@ class VideoDownloader:
         for p_idx, h in enumerate(header_profiles, 1):
             try:
                 logger.info(f"[Tier 1] Trying header profile {p_idx} for direct stream...")
-                with requests.get(media_url, headers=h, stream=True, timeout=30) as r:
+                with requests.get(
+                    media_url,
+                    headers={**h, "Accept-Encoding": "identity"},
+                    stream=True,
+                    timeout=(12, 45),
+                ) as r:
                     if r.status_code in (200, 206):
+                        content_type = (r.headers.get("content-type") or "").lower()
+                        if "text/html" in content_type or "application/json" in content_type:
+                            logger.warning(
+                                "[Tier 1] Profile %d returned non-media content (%s); skipping.",
+                                p_idx, content_type,
+                            )
+                            continue
                         total_bytes = int(r.headers.get("content-length", 0))
                         downloaded = 0
 
                         with open(temp_download_path, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=256 * 1024):
+                            for chunk in r.iter_content(chunk_size=1024 * 1024):
                                 if chunk:
                                     f.write(chunk)
                                     downloaded += len(chunk)
@@ -301,7 +327,9 @@ class VideoDownloader:
                     "curl", "-sSL", "-L", "--fail",
                     "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                     "-e", ref,
-                    "--compressed",
+                    "--connect-timeout", "15",
+                    "--speed-time", "45",
+                    "--speed-limit", "1024",
                     "-o", str(temp_download_path),
                     media_url
                 ]
@@ -420,8 +448,11 @@ class VideoDownloader:
             "quiet": True,
             "no_warnings": True,
             "ignoreerrors": False,
-            "retries": 3,
-            "socket_timeout": 30,
+            "retries": 2,
+            "fragment_retries": 3,
+            "concurrent_fragment_downloads": 6,
+            "buffersize": 1024 * 1024,
+            "socket_timeout": 25,
             "logger": YtDlpDownloaderLogger()
         }
 
@@ -431,14 +462,26 @@ class VideoDownloader:
                 report_data["title"] = info.get("title") or title
                 report_data["duration_seconds"] = info.get("duration")
 
-        # Locate output file
+        # Normalize yt-dlp's actual output to the filename expected by the
+        # job tracker. Previously an already-MP4 output could be left under
+        # yt-dlp's own name, leaving the job stuck without a final file.
         if not final_filepath.exists():
-            candidates = list(self.output_dir.glob(f"{safe_title}_{timestamp}.*"))
+            candidates = sorted(
+                self.output_dir.glob(f"{safe_title}_{timestamp}.*"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
             if candidates:
                 cand = candidates[0]
-                if cand.suffix.lower() != ".mp4":
-                    self._convert_to_mp4(cand, final_filepath)
-                    cand.unlink(missing_ok=True)
+                if cand.resolve() != final_filepath.resolve():
+                    if cand.suffix.lower() == ".mp4":
+                        os.replace(cand, final_filepath)
+                    else:
+                        self._convert_to_mp4(cand, final_filepath)
+                        cand.unlink(missing_ok=True)
+
+        if not final_filepath.exists() or final_filepath.stat().st_size <= 1000:
+            raise RuntimeError("yt-dlp finished without producing a valid output video file.")
 
     def _convert_to_mp4(self, input_file: Path, output_file: Path):
         """
@@ -446,14 +489,13 @@ class VideoDownloader:
         """
         logger.info(f"Running FFmpeg remux: {input_file} -> {output_file}")
         
-        # Step 1: Try fast stream copy
+        # Step 1: Pure stream copy is the fastest lossless path. Only
+        # transcode if the source codecs/container cannot be muxed into MP4.
         cmd = [
             self.ffmpeg_path,
             "-y",
             "-i", str(input_file),
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            "-c", "copy",
             "-movflags", "+faststart",
             str(output_file)
         ]
