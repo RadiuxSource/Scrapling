@@ -97,15 +97,6 @@ class MediaInspector:
     Extracts direct media and discovers/crawls video catalog pages.
     """
 
-    # Conservative title/slug filter: do not process entries whose wording
-    # makes the depicted person's age ambiguous. This is intentionally
-    # separate from media parsing and applies before any extractor is invoked.
-    AGE_AMBIGUOUS_TERMS = re.compile(
-        r"(?:^|[\s_/-])(?:teen(?:s|age)?|underage|under-age|minor|child|children|kid|kids|"
-        r"schoolgirl|schoolboy|school-girl|school-boy|loli(?:ta)?|barely[-_ ]legal)(?:$|[\s_/?#-])",
-        re.IGNORECASE,
-    )
-
     def __init__(self, timeout: int = 25, max_workers: int = 8):
         self.timeout = timeout
         self.max_workers = max_workers
@@ -129,10 +120,6 @@ class MediaInspector:
             return value if isinstance(value, str) else str(value)
         except Exception:
             return ""
-
-    @classmethod
-    def _is_age_ambiguous(cls, value: str) -> bool:
-        return bool(cls.AGE_AMBIGUOUS_TERMS.search(value or ""))
 
     def inspect_url(
         self,
@@ -332,10 +319,6 @@ class MediaInspector:
                 if any(pattern.search(parsed_href.path) for pattern in IGNORE_LINK_PATTERNS):
                     continue
 
-                anchor_text = " ".join(anchor.css("::text").getall())
-                if self._is_age_ambiguous(f"{full_href} {anchor_text}"):
-                    logger.info("Skipping age-ambiguous video entry: %s", full_href)
-                    continue
 
                 is_video_path = any(
                     pattern.search(full_href) for pattern in VIDEO_PATH_PATTERNS
@@ -1048,9 +1031,6 @@ class MediaInspector:
         self, sub_url: str
     ) -> List[Dict[str, Any]]:
         """Inspect an individual discovered video page."""
-        if self._is_age_ambiguous(sub_url):
-            logger.info("Skipping age-ambiguous video page: %s", sub_url)
-            return []
 
         videos = self._inspect_with_ytdlp(sub_url)
         if videos:
