@@ -400,22 +400,11 @@ class MediaInspector:
                     )
                 )
 
-        # Expensive recovery is strictly zero-video-only. First inspect the
-        # already-discovered detail pages for outbound player destinations.
-        if len(report["videos"]) == 0 and discovered_list:
-            logger.warning(
-                "Normal extraction returned ZERO videos. Checking outbound player destinations."
-            )
-            external_recovered = self._zero_video_external_destination_recovery(
-                clean_url, discovered_list
-            )
-            if external_recovered:
-                report["videos"].extend(external_recovered)
-                report["detected_players"].append(
-                    "External Destination Recovery"
-                )
-
-        # Browser recovery remains the final zero-video-only fallback.
+        # Heavy recovery is strictly zero-video-only. These sites expose
+        # genuine same-domain /video/... links in the listing HTML, while
+        # clicking them can trigger advertising popups. Navigate to those
+        # discovered detail URLs directly in one controlled browser session;
+        # do not re-fetch every page through the external-destination scanner.
         if len(report["videos"]) == 0:
             logger.warning(
                 "Normal extraction returned ZERO videos. "
@@ -871,21 +860,32 @@ class MediaInspector:
 
             candidates = collect_video_links(page)
             candidates.extend(discovered_urls)
-            candidates = list(dict.fromkeys(candidates))
+            # Prefer the exact same-domain detail URLs extracted from the listing.
+            # Keep this sequential and bounded to avoid the HTTP 429s caused by
+            # repeatedly fetching the same pages in multiple fallback passes.
+            root_host = (urllib.parse.urlparse(root_url).hostname or "").lower()
+            same_site = [
+                url for url in discovered_urls
+                if (urllib.parse.urlparse(url).hostname or "").lower() == root_host
+                and urllib.parse.urlparse(url).path.lower().startswith("/video/")
+            ]
+            candidates = list(dict.fromkeys(same_site + candidates))
+            candidates = candidates[:20]
 
             logger.info(
-                "Browser recovery discovered %d candidate video links.",
+                "Browser recovery discovered %d candidate video links "
+                "(prioritizing same-domain /video/ pages).",
                 len(candidates),
             )
 
             recovered.extend(inspect_rendered_page(page, root_url))
 
-            for index, candidate in enumerate(candidates[:12], start=1):
+            for index, candidate in enumerate(candidates[:20], start=1):
                 if recovered:
                     break
 
                 logger.warning(
-                    "Browser recovery attempt %d/12: %s", index, candidate
+                    "Direct video-page recovery attempt %d/20: %s", index, candidate
                 )
                 try:
                     response = page.goto(
