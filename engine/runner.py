@@ -44,22 +44,64 @@ def handle_test_website(url: str, custom_token: str = None, custom_chat_id: str 
     return output
 
 def handle_scrape_batch(urls: list, deep_crawl: bool = True, max_subpages: int = 100, subpage_offset: int = 0):
+    """Inspect every submitted URL and preserve partial results if one URL fails."""
     inspector = MediaInspector()
     results = []
+    failures = []
     total_videos = 0
-    for u in urls:
-        clean_u = u.strip()
-        if not clean_u:
-            continue
-        rep = inspector.inspect_url(clean_u, deep_crawl=deep_crawl, max_subpages=max_subpages, subpage_offset=subpage_offset)
-        results.append(rep)
-        total_videos += len(rep.get("videos", []))
-    
+    total_subpages_discovered = 0
+    total_subpages_scanned = 0
+    submitted_urls = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
+
+    for clean_u in submitted_urls:
+        try:
+            rep = inspector.inspect_url(
+                clean_u,
+                deep_crawl=deep_crawl,
+                max_subpages=max_subpages,
+                subpage_offset=subpage_offset,
+            )
+            if not isinstance(rep, dict):
+                raise TypeError("Inspector returned an invalid report")
+
+            videos = rep.get("videos") or []
+            rep.setdefault("page_url", clean_u)
+            rep.setdefault("videos", [])
+            results.append(rep)
+            total_videos += len(videos)
+            total_subpages_discovered += int(rep.get("total_subpages_discovered", rep.get("subpages_discovered", 0)) or 0)
+            total_subpages_scanned += int(rep.get("subpages_scanned", 0) or 0)
+
+            if rep.get("error"):
+                failures.append({"url": clean_u, "error": str(rep["error"])})
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+            failures.append({"url": clean_u, "error": error})
+            results.append({
+                "page_url": clean_u,
+                "success": False,
+                "error": error,
+                "videos": [],
+                "subpages_discovered": 0,
+                "total_subpages_discovered": 0,
+                "subpages_scanned": 0,
+                "has_more_subpages": False,
+                "next_offset": None,
+            })
+            logging.exception("Batch inspection failed for %s", clean_u)
+
+    completed_urls = len(results)
     return {
-        "success": True,
-        "total_urls": len(results),
+        "success": completed_urls == len(submitted_urls) and not failures,
+        "completed": True,
+        "total_urls": len(submitted_urls),
+        "completed_urls": completed_urls,
+        "failed_urls": len(failures),
+        "total_subpages_discovered": total_subpages_discovered,
+        "total_subpages_scanned": total_subpages_scanned,
         "total_videos_detected": total_videos,
-        "results": results
+        "errors": failures,
+        "results": results,
     }
 
 def handle_download_job(job_id: str, media_url: str, title: str, format_id: str = None):
