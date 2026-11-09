@@ -1060,15 +1060,33 @@ class MediaInspector:
                     )
                 )
 
+            iframe_sources = []
             for iframe in page.css("iframe"):
                 iframe_src = iframe.attrib.get("src") or iframe.attrib.get("data-src")
                 if iframe_src:
                     full_iframe = urllib.parse.urljoin(sub_url, iframe_src)
+                    iframe_sources.append(full_iframe)
                     iframe_host = urllib.parse.urlparse(full_iframe).netloc.lower()
                     if any(domain in iframe_host for domain in COMMON_EMBED_DOMAINS):
                         embedded = self._inspect_with_ytdlp(full_iframe)
                         if embedded:
                             results.extend(embedded)
+
+            if not results:
+                # Keep the normal path lightweight: report the player structure
+                # already present in the fetched HTML so zero-video recovery can
+                # target the actual embed instead of repeatedly opening the page.
+                logger.info(
+                    "No media extracted from detail page %s: HTML=%d chars, "
+                    "video_tags=%d, iframe_sources=%s, script_tags=%d, "
+                    "stream_candidates=%s",
+                    sub_url,
+                    len(html),
+                    len(page.css("video")),
+                    iframe_sources[:5],
+                    len(page.css("script")),
+                    self._sniff_streams_from_html(html, sub_url)[:5],
+                )
 
         except Exception as exc:
             logger.debug("Subpage parse error for %s: %s", sub_url, exc)
