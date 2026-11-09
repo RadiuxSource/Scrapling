@@ -301,14 +301,18 @@ class TelegramNotifier:
             else:
                 file_handle = await client.upload_file(file_path)
 
-            msg = await client.send_file(
-                entity,
-                file_handle,
-                caption=caption[:1024],
-                supports_streaming=True
-            )
-            await client.disconnect()
-            return msg.id
+            try:
+                msg = await client.send_file(
+                    entity,
+                    file_handle,
+                    caption=caption[:1024],
+                    supports_streaming=True
+                )
+                return msg.id
+            finally:
+                # Always release the MTProto connection, even if upload/send
+                # fails after worker tasks have started.
+                await client.disconnect()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -324,6 +328,7 @@ class TelegramNotifier:
             return {"success": False, "error": str(err)}
         finally:
             loop.close()
+            asyncio.set_event_loop(None)
 
     def _upload_via_ffmpeg_split(self, file_path: str, title: str, base_caption: str, size_mb: float) -> Dict[str, Any]:
         """
@@ -403,7 +408,7 @@ class TelegramNotifier:
                     logger.error(f"Failed to upload part {idx}: {upload_res.get('error')}")
 
             return {
-                "success": uploaded_count > 0,
+                "success": uploaded_count == len(parts),
                 "method": "split_multi_part",
                 "total_parts": len(parts),
                 "uploaded_parts": uploaded_count,
