@@ -785,11 +785,9 @@ class MediaInspector:
 
         def capture_media_response(response):
             try:
-                # Save response handles only. Read headers after the callback
-                # has returned to avoid synchronous Playwright calls inside
-                # Patchright's response event handler.
-                if len(network_responses) < 250:
-                    network_responses.append(response)
+                # Read response headers later, outside this callback. Keep
+                # only likely media/player requests so metadata inspection
+                # stays cheap even on pages with many ad/tracker responses.
                 response_url = response.url
                 parsed = urllib.parse.urlparse(response_url)
                 host = (parsed.hostname or "").lower()
@@ -832,9 +830,18 @@ class MediaInspector:
                     or stream_path_hint
                     or stream_query_hint
                 )
-                if parsed.scheme in ("http", "https") and host and is_media_url:
-                    if response_url not in network_media_urls:
+                try:
+                    resource_type = response.request.resource_type
+                except Exception:
+                    resource_type = ""
+                if parsed.scheme in ("http", "https") and host:
+                    if is_media_url and response_url not in network_media_urls:
                         network_media_urls.append(response_url)
+                    if (
+                        (is_media_url or resource_type in ("media", "xhr", "fetch"))
+                        and len(network_responses) < 120
+                    ):
+                        network_responses.append(response)
             except Exception:
                 pass
 
@@ -987,7 +994,7 @@ class MediaInspector:
 
                         # A short bounded settling period allows inline player
                         # setup without waiting for ad/tracker network idle.
-                        logger.info("Browser inspection stage: settling completed; beginning DOM inspection")
+                        logger.info("Browser inspection stage: settling completed; inspecting network responses")
                         page.wait_for_timeout(1800)
 
                         # Inspect response metadata outside the event callback.
@@ -996,6 +1003,11 @@ class MediaInspector:
                         for observed in list(network_responses):
                             try:
                                 observed_url = observed.url
+                                if any(word in observed_url.lower() for word in (
+                                    "doubleclick", "googlesyndication", "adservice",
+                                    "analytics", "tracking", "popads", "banner",
+                                )):
+                                    continue
                                 observed_status = observed.status
                                 observed_headers = observed.headers
                                 content_type = (
