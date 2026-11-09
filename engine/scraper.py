@@ -400,7 +400,22 @@ class MediaInspector:
                     )
                 )
 
-        # Expensive browser recovery is strictly zero-video-only.
+        # Expensive recovery is strictly zero-video-only. First inspect the
+        # already-discovered detail pages for outbound player destinations.
+        if len(report["videos"]) == 0 and discovered_list:
+            logger.warning(
+                "Normal extraction returned ZERO videos. Checking outbound player destinations."
+            )
+            external_recovered = self._zero_video_external_destination_recovery(
+                discovered_list
+            )
+            if external_recovered:
+                report["videos"].extend(external_recovered)
+                report["detected_players"].append(
+                    "External Destination Recovery"
+                )
+
+        # Browser recovery remains the final zero-video-only fallback.
         if len(report["videos"]) == 0:
             logger.warning(
                 "Normal extraction returned ZERO videos. "
@@ -495,6 +510,117 @@ class MediaInspector:
 
         return recovered_videos
 
+    def _zero_video_external_destination_recovery(
+        self, discovered_urls: List[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Last-resort, zero-video-only pass for detail pages that link to an
+        external player instead of embedding the media in their own HTML.
+        It follows ordinary video/player links only; it does not click ads.
+        """
+        recovered: List[Dict[str, Any]] = []
+        root_hosts = {
+            (urllib.parse.urlparse(url).hostname or "").lower()
+            for url in discovered_urls
+        }
+        video_words = (
+            "watch", "play", "video", "stream", "player",
+            "embed", "movie", "view",
+        )
+        blocked_words = (
+            "advert", "sponsor", "banner", "popup",
+            "doubleclick", "analytics", "tracking",
+        )
+        candidates: List[str] = []
+        seen_candidates = set()
+
+        # Detail pages are already known from normal catalog discovery.
+        # Only revisit a bounded number when normal extraction found nothing.
+        for detail_url in discovered_urls[:20]:
+            try:
+                page = Fetcher.get(
+                    detail_url,
+                    impersonate="chrome",
+                    stealthy_headers=True,
+                    timeout=10,
+                )
+                for anchor in page.css("a"):
+                    raw_href = anchor.attrib.get("href")
+                    if not raw_href or raw_href.startswith((
+                        "#", "javascript:", "mailto:", "tel:",
+                    )):
+                        continue
+                    destination = urllib.parse.urljoin(detail_url, raw_href)
+                    parsed = urllib.parse.urlparse(destination)
+                    host = (parsed.hostname or "").lower()
+                    if parsed.scheme not in ("http", "https") or not host:
+                        continue
+                    if host in root_hosts:
+                        continue
+                    description = " ".join([
+                        " ".join(anchor.css("::text").getall()),
+                        str(anchor.attrib.get("class", "")),
+                        str(anchor.attrib.get("title", "")),
+                        str(anchor.attrib.get("aria-label", "")),
+                        parsed.path,
+                    ]).lower()
+                    if any(word in destination.lower() for word in blocked_words):
+                        continue
+                    if any(word in description for word in blocked_words):
+                        continue
+                    if not any(word in description for word in video_words):
+                        continue
+                    if destination not in seen_candidates:
+                        seen_candidates.add(destination)
+                        candidates.append(destination)
+
+                # Some detail pages point to the external player in an iframe.
+                for iframe in page.css("iframe"):
+                    raw_src = iframe.attrib.get("src") or iframe.attrib.get("data-src")
+                    if not raw_src:
+                        continue
+                    destination = urllib.parse.urljoin(detail_url, raw_src)
+                    parsed = urllib.parse.urlparse(destination)
+                    host = (parsed.hostname or "").lower()
+                    if (
+                        parsed.scheme in ("http", "https")
+                        and host
+                        and host not in root_hosts
+                        and not any(word in destination.lower() for word in blocked_words)
+                        and destination not in seen_candidates
+                    ):
+                        seen_candidates.add(destination)
+                        candidates.append(destination)
+            except Exception as exc:
+                logger.debug(
+                    "External destination discovery failed for %s: %s",
+                    detail_url, exc,
+                )
+
+        logger.info(
+            "Zero-video external destination pass found %d candidate player URL(s).",
+            len(candidates),
+        )
+        for index, destination in enumerate(candidates[:12], start=1):
+            logger.info(
+                "Inspecting external player destination %d/12: %s",
+                index, destination,
+            )
+            try:
+                videos = self._inspect_single_subpage(destination)
+                if videos:
+                    recovered.extend(videos)
+                    logger.info(
+                        "External destination yielded %d video(s): %s",
+                        len(videos), destination,
+                    )
+                    break
+            except Exception as exc:
+                logger.warning(
+                    "External destination inspection failed for %s: %s",
+                    destination, exc,
+                )
+        return recovered
     def _zero_video_browser_recovery(
         self,
         root_url: str,
