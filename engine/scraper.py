@@ -557,7 +557,29 @@ class MediaInspector:
             if host in root_hosts:
                 return
             lowered = destination.lower()
+            path_lower = parsed.path.lower()
+            # Reject static resources before they reach yt-dlp: CSS/font
+            # URLs can otherwise be misidentified as generic extractors.
+            if re.search(
+                r"\\.(?:css|js|mjs|woff2?|ttf|otf|eot|"
+                r"png|jpe?g|gif|svg|webp|ico|pdf|zip)(?:$)",
+                path_lower,
+                re.IGNORECASE,
+            ):
+                return
+            if host in (
+                "fonts.googleapis.com", "fonts.gstatic.com",
+                "cdnjs.cloudflare.com", "ajax.googleapis.com",
+            ):
+                return
             if any(word in lowered for word in blocked_words):
+                return
+            # Script literals are noisy. Keep only URLs with a recognizable
+            # video route/parameter or explicit video wording.
+            if source == "script" and not (
+                any(pattern.search(destination) for pattern in VIDEO_PATH_PATTERNS)
+                or any(word in lowered for word in video_words)
+            ):
                 return
             if destination not in seen_candidates and len(candidates) < 40:
                 seen_candidates.add(destination)
@@ -586,6 +608,12 @@ class MediaInspector:
                 # context or a known navigation attribute.
                 for node in page.css("*"):
                     attrs = getattr(node, "attrib", {}) or {}
+                    tag_name = str(getattr(node, "tag", "")).lower()
+                    # Stylesheet/script/image/resource elements are never
+                    # navigation targets, even when their URL contains query
+                    # parameters that resemble video metadata.
+                    if tag_name in ("link", "script", "img", "source"):
+                        continue
                     tag_context = " ".join([
                         str(attrs.get("class", "")),
                         str(attrs.get("id", "")),
