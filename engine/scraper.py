@@ -769,18 +769,15 @@ class MediaInspector:
                     "analytics", "tracking", "popads", "banner",
                 )):
                     return
-                headers = response.headers or {}
-                content_type = str(headers.get("content-type", "")).lower()
+                # Keep this event callback strictly local. Calling response.headers
+                # here performs a synchronous Playwright protocol request from
+                # inside a protocol event callback; with Patchright this can
+                # deadlock the sync driver after page.goto() returns.
                 is_media_url = bool(re.search(
                     r"\.(?:m3u8|mpd|mp4|webm|mov|mkv)(?:[?#]|$)",
                     lowered,
                 ))
-                is_media_type = (
-                    content_type.startswith("video/")
-                    or "mpegurl" in content_type
-                    or "dash+xml" in content_type
-                )
-                if parsed.scheme in ("http", "https") and host and (is_media_url or is_media_type):
+                if parsed.scheme in ("http", "https") and host and is_media_url:
                     if response_url not in network_media_urls:
                         network_media_urls.append(response_url)
             except Exception:
@@ -789,9 +786,12 @@ class MediaInspector:
         def inspect_rendered_page(page, source_url):
             found = []
             try:
+                logger.info("Browser inspection stage: reading page URL/title for %s", source_url)
                 final_url = page.url or source_url
                 title = page.title() or "Detected Video"
+                logger.info("Browser inspection stage: reading rendered HTML for %s", final_url)
                 html = page.content()
+                logger.info("Browser inspection stage: locating video elements for %s", final_url)
                 video_items = page.locator("video").evaluate_all(
                     """videos => videos.map(v => ({
                         src: v.getAttribute('src'),
@@ -831,6 +831,7 @@ class MediaInspector:
                 # Some sites keep the actual player in a third-party iframe.
                 # Inspect a small bounded set of iframe URLs with yt-dlp;
                 # never click page controls or follow popup/ad links.
+                logger.info("Browser inspection stage: locating iframe elements for %s", final_url)
                 iframe_items = page.locator("iframe").evaluate_all(
                     """frames => frames.map(f => ({
                         src: f.getAttribute('src') ||
@@ -930,7 +931,9 @@ class MediaInspector:
 
                         # A short bounded settling period allows inline player
                         # setup without waiting for ad/tracker network idle.
+                        logger.info("Browser inspection stage: settling completed; beginning DOM inspection")
                         page.wait_for_timeout(1200)
+                        logger.info("Browser inspection stage: starting rendered-page inspection")
                         recovered.extend(inspect_rendered_page(page, candidate))
 
                         # Avoid a second synchronous yt-dlp network extraction here.
