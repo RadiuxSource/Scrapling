@@ -173,15 +173,20 @@ export default function App() {
         })
       });
 
-      const data = await res.json();
-      if (data.inspection) {
-        setInspectionReport(data.inspection);
-        setTelegramTestResult(data.telegram_notification);
-        // Replace previous link's results completely with current link's verified videos
-        setVideos(data.inspection.videos || []);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Test Website request failed (HTTP ' + res.status + ').');
       }
+      if (!data.inspection) {
+        throw new Error(data.error || 'The test finished without returning an inspection report.');
+      }
+      setInspectionReport(data.inspection);
+      setTelegramTestResult(data.telegram_notification);
+      setVideos(data.inspection.videos || []);
     } catch (err: any) {
+      const message = err?.message || 'Unknown error';
       console.error('Test website failed', err);
+      window.alert('Test Website failed: ' + message);
     } finally {
       setIsTesting(false);
       fetchLogs();

@@ -719,7 +719,10 @@ class MediaInspector:
             browser_response = StealthyFetcher.fetch(
                 root_url,
                 headless=True,
-                timeout=max(15000, min(self.timeout * 1000, 30000)),
+                # Keep this last-resort attempt bounded; avoid three full retries.
+                timeout=12000,
+                retries=1,
+                retry_delay=0,
                 network_idle=False,
                 disable_resources=False,
                 page_setup=register_popup_handler,
