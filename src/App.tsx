@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Header } from './components/Header';
+import { VideoPlayerModal } from './components/VideoPlayerModal';
 const ScraperConsole = lazy(() => import('./components/ScraperConsole').then((m) => ({ default: m.ScraperConsole })));
 const QueueManager = lazy(() => import('./components/QueueManager').then((m) => ({ default: m.QueueManager })));
 const FileManager = lazy(() => import('./components/FileManager').then((m) => ({ default: m.FileManager })));
 const TelegramHub = lazy(() => import('./components/TelegramHub').then((m) => ({ default: m.TelegramHub })));
 const LogsViewer = lazy(() => import('./components/LogsViewer').then((m) => ({ default: m.LogsViewer })));
-import { VideoPlayerModal } from './components/VideoPlayerModal';
 import {
   ScrapedVideo,
   InspectionReport,
