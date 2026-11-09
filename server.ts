@@ -449,28 +449,12 @@ async function processNextNonstopItem() {
         currentSession.reportFiles.add(`${job_id}.json`);
       }
 
-      // Check auto upload to Telegram
-      let settings = { auto_upload_telegram: false };
-      if (fs.existsSync(SETTINGS_FILE)) {
-        try {
-          settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
-        } catch {
-          // ignore
-        }
-      }
-
-      if (settings.auto_upload_telegram && nonstopQueue.is_running) {
-        addLog('info', `[Nonstop Queue] Auto-uploading ${result.output_filename} to Telegram...`);
-        try {
-          await runPythonRunner('telegram-upload', {
-            title: cleanTitle,
-            file_path: result.output_file,
-            file_size_bytes: result.file_size_bytes,
-          });
-          addLog('info', `[Nonstop Queue] Telegram upload dispatched for: ${cleanTitle}`);
-        } catch (tgErr: any) {
-          addLog('warn', `[Nonstop Queue] Telegram upload warning: ${tgErr.message}`);
-        }
+      // VideoDownloader already performs the configured Telegram upload
+      // before its Python runner returns. Do not dispatch a second upload here.
+      if (result.telegram_uploaded) {
+        addLog('info', `[Nonstop Queue] Telegram upload completed for: ${cleanTitle}`);
+      } else if (result.telegram_result?.error) {
+        addLog('warn', `[Nonstop Queue] Telegram upload warning: ${result.telegram_result.error}`);
       }
     } else {
       job.status = 'failed';
