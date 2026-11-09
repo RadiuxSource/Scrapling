@@ -360,6 +360,10 @@ class VideoDownloader:
                 cmd = [
                     self.ffmpeg_path, "-y",
                     "-headers", headers_str,
+                    "-rw_timeout", "30000000",
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "5",
                     "-i", media_url,
                     "-c", "copy",
                     "-movflags", "+faststart",
