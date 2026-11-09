@@ -222,7 +222,13 @@ export default function App() {
           subpage_offset: offset
         })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Crawler request failed (HTTP ' + res.status + ').');
+      }
+      if (data.error && (!data.results || data.results.length === 0)) {
+        throw new Error(data.error);
+      }
 
       if (data.results && data.results.length > 0) {
         setInspectionReport(data.results[0]);
@@ -244,8 +250,10 @@ export default function App() {
           setVideos(extracted);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
+      const message = err?.message || 'Unknown crawler error';
       console.error('Deep scrape failed', err);
+      window.alert('Crawler failed: ' + message);
     } finally {
       setIsScraping(false);
       fetchLogs();
