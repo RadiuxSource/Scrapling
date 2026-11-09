@@ -467,7 +467,11 @@ class VideoDownloader:
         # yt-dlp's own name, leaving the job stuck without a final file.
         if not final_filepath.exists():
             candidates = sorted(
-                self.output_dir.glob(f"{safe_title}_{timestamp}.*"),
+                (
+                    item for item in self.output_dir.glob(f"{safe_title}_{timestamp}.*")
+                    if ".tmp." not in item.name
+                    and not item.name.endswith((".part", ".ytdl"))
+                ),
                 key=lambda item: item.stat().st_mtime,
                 reverse=True,
             )
