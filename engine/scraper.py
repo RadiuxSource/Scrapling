@@ -783,15 +783,28 @@ class MediaInspector:
                 # callback URL-only: synchronous header access can deadlock
                 # Patchright's event loop.
                 has_media_extension = bool(re.search(
-                    r"\\.(?:m3u8|mpd|mp4|webm|mov|mkv|m4v|ts)(?:[?#]|$)",
+                    r"\.(?:m3u8|mpd|mp4|webm|mov|mkv|m4v|ts)(?:[?#]|$)",
                     lowered,
                 ))
-                media_url_hint = bool(re.search(
-                    r"(?:^|[/_.?&=-])(?:video|videos|stream|media|hls|dash|manifest|playlist|master|"
-                    r"get_video|video_file|playback|source)(?:[/_.?&=-]|$)",
-                    lowered,
+                # Avoid matching the detail-page route itself (for example
+                # /video/10276/title/). Extensionless endpoints need a more
+                # specific stream/player path or a media-specific query key.
+                path_lower = (parsed.path or "").lower()
+                query_lower = (parsed.query or "").lower()
+                stream_path_hint = bool(re.search(
+                    r"/(?:get[_-]?video|video[_-]?file|stream|hls|dash|manifest|playlist|master|"
+                    r"playback|media|source)(?:/|$)",
+                    path_lower,
                 ))
-                is_media_url = has_media_extension or media_url_hint
+                stream_query_hint = bool(re.search(
+                    r"(?:^|&)(?:file|video_url|video_src|stream|manifest|playlist|media|source)=",
+                    query_lower,
+                ))
+                is_media_url = (
+                    has_media_extension
+                    or stream_path_hint
+                    or stream_query_hint
+                )
                 if parsed.scheme in ("http", "https") and host and is_media_url:
                     if response_url not in network_media_urls:
                         network_media_urls.append(response_url)
