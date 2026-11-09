@@ -264,6 +264,8 @@ class TelegramNotifier:
                 queue = asyncio.Queue()
                 for i in range(total_parts):
                     queue.put_nowait(i)
+                uploaded_parts = 0
+                last_logged_percent = 0
 
                 async def worker():
                     with open(file_path, "rb") as f:
@@ -288,6 +290,14 @@ class TelegramNotifier:
                                                 file_id, part_index, chunk
                                             )
                                         await client(req)
+                                        uploaded_parts += 1
+                                        percent = int(uploaded_parts * 100 / total_parts)
+                                        if percent >= last_logged_percent + 10:
+                                            last_logged_percent = percent
+                                            logger.info(
+                                                "Telegram MTProto upload progress: %d%% (%d/%d parts)",
+                                                percent, uploaded_parts, total_parts,
+                                            )
                                         break
                                     except Exception as part_err:
                                         if attempt == 2:
@@ -328,7 +338,11 @@ class TelegramNotifier:
             finally:
                 # Release the MTProto connection even when startup, part
                 # transfer, or the final Telegram send fails.
-                await client.disconnect()
+                try:
+                    if client.is_connected():
+                        await client.disconnect()
+                except Exception as disconnect_error:
+                    logger.debug("MTProto disconnect cleanup: %s", disconnect_error)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
