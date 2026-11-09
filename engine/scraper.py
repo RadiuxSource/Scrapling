@@ -514,28 +514,58 @@ class MediaInspector:
         self, discovered_urls: List[str],
     ) -> List[Dict[str, Any]]:
         """
-        Last-resort, zero-video-only pass for detail pages that link to an
-        external player instead of embedding the media in their own HTML.
-        It follows ordinary video/player links only; it does not click ads.
+        Last-resort, zero-video-only pass for detail pages whose player is
+        exposed through card attributes, click handlers, scripts, or iframes.
+        Never clicks page elements or follows arbitrary ad links.
         """
         recovered: List[Dict[str, Any]] = []
         root_hosts = {
             (urllib.parse.urlparse(url).hostname or "").lower()
             for url in discovered_urls
         }
-        video_words = (
-            "watch", "play", "video", "stream", "player",
-            "embed", "movie", "view",
-        )
         blocked_words = (
-            "advert", "sponsor", "banner", "popup",
-            "doubleclick", "analytics", "tracking",
+            "advert", "sponsor", "banner", "popup", "doubleclick",
+            "analytics", "tracking", "adservice", "affiliate",
+        )
+        video_words = (
+            "video", "watch", "play", "movie", "episode", "clip",
+            "player", "film", "stream", "media",
+        )
+        url_pattern = re.compile(
+            r"""(?:(?:https?:)?//|(?:/|\./|\.\./))[^\s"'<>\\)]+""",
+            re.IGNORECASE,
+        )
+        url_attributes = (
+            "href", "data-href", "data-url", "data-src", "data-link",
+            "data-video", "data-player", "formaction",
         )
         candidates: List[str] = []
         seen_candidates = set()
+        source_counts = {"attribute": 0, "iframe": 0, "script": 0}
 
-        # Detail pages are already known from normal catalog discovery.
-        # Only revisit a bounded number when normal extraction found nothing.
+        def add_candidate(raw_value: str, base_url: str, source: str) -> None:
+            raw_value = (raw_value or "").strip().strip("\\'\";,()")
+            if not raw_value or raw_value.startswith((
+                "#", "javascript:", "mailto:", "tel:", "data:",
+            )):
+                return
+            destination = urllib.parse.urljoin(base_url, raw_value)
+            parsed = urllib.parse.urlparse(destination)
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme not in ("http", "https") or not host:
+                return
+            if host in root_hosts:
+                return
+            lowered = destination.lower()
+            if any(word in lowered for word in blocked_words):
+                return
+            if destination not in seen_candidates and len(candidates) < 40:
+                seen_candidates.add(destination)
+                candidates.append(destination)
+                source_counts[source] += 1
+
+        # These pages are revisited only after the normal extractor returned
+        # zero videos. Keep both the page count and destination count bounded.
         for detail_url in discovered_urls[:20]:
             try:
                 page = Fetcher.get(
@@ -544,53 +574,81 @@ class MediaInspector:
                     stealthy_headers=True,
                     timeout=10,
                 )
-                for anchor in page.css("a"):
-                    raw_href = anchor.attrib.get("href")
-                    if not raw_href or raw_href.startswith((
-                        "#", "javascript:", "mailto:", "tel:",
-                    )):
-                        continue
-                    destination = urllib.parse.urljoin(detail_url, raw_href)
-                    parsed = urllib.parse.urlparse(destination)
-                    host = (parsed.hostname or "").lower()
-                    if parsed.scheme not in ("http", "https") or not host:
-                        continue
-                    if host in root_hosts:
-                        continue
-                    description = " ".join([
-                        " ".join(anchor.css("::text").getall()),
-                        str(anchor.attrib.get("class", "")),
-                        str(anchor.attrib.get("title", "")),
-                        str(anchor.attrib.get("aria-label", "")),
-                        parsed.path,
-                    ]).lower()
-                    if any(word in destination.lower() for word in blocked_words):
-                        continue
-                    if any(word in description for word in blocked_words):
-                        continue
-                    if not any(word in description for word in video_words):
-                        continue
-                    if destination not in seen_candidates:
-                        seen_candidates.add(destination)
-                        candidates.append(destination)
 
-                # Some detail pages point to the external player in an iframe.
                 for iframe in page.css("iframe"):
-                    raw_src = iframe.attrib.get("src") or iframe.attrib.get("data-src")
-                    if not raw_src:
-                        continue
-                    destination = urllib.parse.urljoin(detail_url, raw_src)
-                    parsed = urllib.parse.urlparse(destination)
-                    host = (parsed.hostname or "").lower()
-                    if (
-                        parsed.scheme in ("http", "https")
-                        and host
-                        and host not in root_hosts
-                        and not any(word in destination.lower() for word in blocked_words)
-                        and destination not in seen_candidates
+                    attrs = iframe.attrib
+                    raw_src = attrs.get("src") or attrs.get("data-src")
+                    if raw_src:
+                        add_candidate(raw_src, detail_url, "iframe")
+
+                # Inspect clickable/card-like elements without executing their
+                # handlers. The destination must be associated with video-like
+                # context or a known navigation attribute.
+                for node in page.css("*"):
+                    attrs = getattr(node, "attrib", {}) or {}
+                    tag_context = " ".join([
+                        str(attrs.get("class", "")),
+                        str(attrs.get("id", "")),
+                        str(attrs.get("title", "")),
+                        str(attrs.get("aria-label", "")),
+                        str(attrs.get("role", "")),
+                    ]).lower()
+                    click_code = str(attrs.get("onclick", ""))
+                    has_image = bool(node.css("img, picture"))
+                    has_video = bool(node.css("video, iframe"))
+                    is_video_context = (
+                        any(word in tag_context for word in video_words)
+                        or has_video
+                        or (has_image and any(
+                            key in attrs for key in (
+                                "href", "data-href", "data-url",
+                                "data-video", "data-player",
+                            )
+                        ))
+                        or bool(re.search(
+                            r"(?:window\.)?location\.(?:href|assign)|window\.open",
+                            click_code,
+                            re.IGNORECASE,
+                        ))
+                    )
+
+                    for attr_name in url_attributes:
+                        raw_value = attrs.get(attr_name)
+                        if not raw_value:
+                            continue
+                        # A bare data-url is too generic by itself. Require
+                        # video/card context unless it is a conventional href.
+                        if attr_name not in ("href", "formaction") and not is_video_context:
+                            continue
+                        if attr_name in ("href", "formaction") and not (
+                            is_video_context
+                            or any(word in str(raw_value).lower() for word in video_words)
+                        ):
+                            continue
+                        add_candidate(str(raw_value), detail_url, "attribute")
+
+                    if click_code and is_video_context:
+                        for match in url_pattern.findall(click_code):
+                            add_candidate(match, detail_url, "attribute")
+
+                # Inline scripts sometimes assign the clicked card's target
+                # through location.href/window.open instead of a DOM href.
+                for script in page.css("script::text").getall():
+                    if not re.search(
+                        r"(?:location\.(?:href|assign)|window\.open)",
+                        script,
+                        re.IGNORECASE,
                     ):
-                        seen_candidates.add(destination)
-                        candidates.append(destination)
+                        continue
+                    if not re.search(
+                        r"video|watch|player|episode|movie|clip|stream|card",
+                        script,
+                        re.IGNORECASE,
+                    ):
+                        continue
+                    for match in url_pattern.findall(script):
+                        add_candidate(match, detail_url, "script")
+
             except Exception as exc:
                 logger.debug(
                     "External destination discovery failed for %s: %s",
@@ -598,8 +656,12 @@ class MediaInspector:
                 )
 
         logger.info(
-            "Zero-video external destination pass found %d candidate player URL(s).",
+            "Zero-video destination scan found %d candidate(s) "
+            "(attributes: %d, iframes: %d, scripts: %d).",
             len(candidates),
+            source_counts["attribute"],
+            source_counts["iframe"],
+            source_counts["script"],
         )
         for index, destination in enumerate(candidates[:12], start=1):
             logger.info(
@@ -621,6 +683,7 @@ class MediaInspector:
                     destination, exc,
                 )
         return recovered
+
     def _zero_video_browser_recovery(
         self,
         root_url: str,
@@ -850,6 +913,9 @@ class MediaInspector:
                 retries=1,
                 retry_delay=0,
                 network_idle=False,
+                # Do not wait for full DOM readiness on pages that keep loading
+                # trackers/ads indefinitely; page_action inspects what is ready.
+                load_dom=False,
                 disable_resources=False,
                 page_setup=register_popup_handler,
                 page_action=browser_recovery_action,
