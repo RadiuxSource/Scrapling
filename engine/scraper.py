@@ -772,7 +772,7 @@ class MediaInspector:
                 headers = response.headers or {}
                 content_type = str(headers.get("content-type", "")).lower()
                 is_media_url = bool(re.search(
-                    r"\\.(?:m3u8|mpd|mp4|webm|mov|mkv)(?:[?#]|$)",
+                    r"\.(?:m3u8|mpd|mp4|webm|mov|mkv)(?:[?#]|$)",
                     lowered,
                 ))
                 is_media_type = (
@@ -896,7 +896,7 @@ class MediaInspector:
         # StealthySession is used instead of StealthyFetcher.fetch because the
         # latter performs its initial navigation internally and waits for the
         # page's full load event. Here Playwright's documented Page.goto API
-        # lets us explicitly wait only for DOMContentLoaded.
+        # lets us wait only for the response commit before inspecting the page.
         try:
             with StealthySession(
                 headless=True,
