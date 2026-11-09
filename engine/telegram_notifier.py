@@ -268,6 +268,7 @@ class TelegramNotifier:
                 last_logged_percent = 0
 
                 async def worker():
+                    nonlocal uploaded_parts, last_logged_percent
                     with open(file_path, "rb") as f:
                         while True:
                             try:
