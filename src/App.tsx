@@ -212,7 +212,7 @@ export default function App() {
 
     try {
       const subpagesLimit = customMaxSubpages !== undefined ? customMaxSubpages : maxCrawlVideos;
-      const res = await fetch('/api/scrape', {
+      const startRes = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -222,15 +222,34 @@ export default function App() {
           subpage_offset: offset
         })
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Crawler request failed (HTTP ' + res.status + ').');
+      const startData = await startRes.json().catch(() => ({}));
+      if (!startRes.ok) {
+        throw new Error(startData.error || 'Crawler request failed (HTTP ' + startRes.status + ').');
       }
-      if (data.error && (!data.results || data.results.length === 0)) {
+      if (!startData.task_id) throw new Error('Crawler did not return a task ID.');
+
+      // Poll the background task instead of holding a long HTTP request open.
+      let data: any = null;
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const statusRes = await fetch(`/api/scrape/status/${encodeURIComponent(startData.task_id)}`);
+        const statusData = await statusRes.json().catch(() => ({}));
+        if (!statusRes.ok) {
+          throw new Error(statusData.error || 'Could not retrieve crawler status (HTTP ' + statusRes.status + ').');
+        }
+        if (statusData.status === 'completed') {
+          data = statusData.result;
+          break;
+        }
+        if (statusData.status === 'failed') {
+          throw new Error(statusData.error || 'Crawler failed.');
+        }
+      }
+      if (data?.error && (!data.results || data.results.length === 0)) {
         throw new Error(data.error);
       }
 
-      if (data.results && data.results.length > 0) {
+      if (data?.results && data.results.length > 0) {
         setInspectionReport(data.results[0]);
         const extracted: ScrapedVideo[] = [];
         data.results.forEach((rep: InspectionReport) => {
