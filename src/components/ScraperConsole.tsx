@@ -14,7 +14,8 @@ import {
   ChevronDown,
   Globe,
   Radio,
-  Square
+  Square,
+  X
 } from 'lucide-react';
 import { ScrapedVideo, InspectionReport, NonstopQueueStatus, EngineLog } from '../types';
 
@@ -40,6 +41,8 @@ interface ScraperConsoleProps {
   maxCrawlVideos: number;
   setMaxCrawlVideos: (val: number) => void;
   nonstopStatus: NonstopQueueStatus | null;
+  queueRestore?: { status: 'idle' | 'restoring' | 'success' | 'cancelled' | 'error'; message: string };
+  onCancelQueueRestore?: () => void;
   onStopNonstopQueue: () => void;
   onClearResults?: () => void;
   onLoadNextBatch?: () => void;
@@ -83,6 +86,8 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   maxCrawlVideos,
   setMaxCrawlVideos,
   nonstopStatus,
+  queueRestore,
+  onCancelQueueRestore,
   onStopNonstopQueue,
   onClearResults,
   onLoadNextBatch,
@@ -154,6 +159,27 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
 
   return (
     <div className="space-y-6">
+      {queueRestore?.status === 'restoring' && (
+        <div className="rounded-lg border border-cyan-500/40 bg-cyan-950/30 px-4 py-3 flex items-center gap-3" role="status">
+          <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
+          <p className="text-xs font-medium text-cyan-100 flex-1">Restoring queue from the database, please wait…</p>
+          <button onClick={onCancelQueueRestore} aria-label="Cancel queue restoration" title="Cancel restoration" className="p-1 rounded-md text-slate-300 hover:text-white hover:bg-white/10">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      {queueRestore?.status === 'success' && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 px-4 py-2.5 flex items-center gap-2 text-xs text-emerald-200" role="status">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{queueRestore.message}</span>
+        </div>
+      )}
+      {queueRestore?.status === 'error' && (
+        <div className="rounded-lg border border-rose-500/40 bg-rose-950/20 px-4 py-2.5 flex items-center gap-2 text-xs text-rose-200" role="alert">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{queueRestore.message}</span>
+        </div>
+      )}
       {(isTesting || isScraping || operationMessage || operationError) && (
         <div className={`rounded-lg border px-4 py-3 flex items-center gap-3 ${operationError ? 'border-rose-500/40 bg-rose-950/20' : 'border-cyan-500/30 bg-slate-900'}`} role="status">
           {operationError ? <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" /> :
