@@ -24,6 +24,17 @@ const SETTINGS_FILE = path.join(ROOT_DIR, 'settings.json');
 
 app.use(express.json({ limit: '10mb' }));
 
+let isShuttingDown = false;
+let httpServer: ReturnType<typeof app.listen> | null = null;
+const SHUTDOWN_GRACE_MS = 24_000;
+
+app.use((req, res, next) => {
+  if (isShuttingDown) {
+    return res.status(503).json({ success: false, error: 'Server is restarting; please retry shortly.' });
+  }
+  next();
+});
+
 // In-memory active download jobs tracker
 interface JobStatus {
   job_id: string;
@@ -268,6 +279,9 @@ function terminateProcessEntry(entry: ActiveProcessEntry) {
 // Helper to execute Python runner
 function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<any> {
   return new Promise((resolve, reject) => {
+    if (isShuttingDown) {
+      return reject(new Error('Server is shutting down; no new engine jobs will be started.'));
+    }
     addLog('info', `Executing runner [${action}]`);
     const proc = spawn('python3', ['-m', 'engine.runner', action], {
       cwd: ROOT_DIR,
@@ -386,6 +400,53 @@ let nonstopQueue: NonstopQueueState = {
   pending_items: [],
 };
 
+const NONSTOP_QUEUE_FILE = path.join(LOGS_DIR, 'nonstop-queue.json');
+let currentNonstopItem: QueueItem | null = null;
+
+function persistNonstopQueueState() {
+  const state = {
+    total_items: nonstopQueue.total_items,
+    current_index: nonstopQueue.current_index,
+    completed_count: nonstopQueue.completed_count,
+    failed_count: nonstopQueue.failed_count,
+    pending_items: nonstopQueue.pending_items,
+    current_item: currentNonstopItem,
+    saved_at: Date.now(),
+  };
+  const tempFile = `${NONSTOP_QUEUE_FILE}.tmp`;
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(state), 'utf-8');
+    fs.renameSync(tempFile, NONSTOP_QUEUE_FILE);
+  } catch (err: any) {
+    addLog('error', `Could not persist nonstop queue state: ${err.message}`);
+    try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch {}
+  }
+}
+
+function restoreNonstopQueueState() {
+  try {
+    if (!fs.existsSync(NONSTOP_QUEUE_FILE)) return;
+    const saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8'));
+    const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
+    const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string'
+      ? [saved.current_item]
+      : [];
+    nonstopQueue.pending_items = [...interrupted, ...pending].filter(
+      (item: any) => item && typeof item.media_url === 'string' && item.media_url.trim()
+    );
+    nonstopQueue.total_items = Number(saved.total_items) || nonstopQueue.pending_items.length;
+    nonstopQueue.current_index = Number(saved.current_index) || 0;
+    nonstopQueue.completed_count = Number(saved.completed_count) || 0;
+    nonstopQueue.failed_count = Number(saved.failed_count) || 0;
+    currentNonstopItem = null;
+    if (nonstopQueue.pending_items.length > 0) {
+      addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s) from the local queue checkpoint.`);
+    }
+  } catch (err: any) {
+    addLog('error', `Could not restore nonstop queue checkpoint: ${err.message}`);
+  }
+}
+
 async function processNextNonstopItem() {
   if (!nonstopQueue.is_running || nonstopQueue.pending_items.length === 0) {
     nonstopQueue.is_running = false;
@@ -395,7 +456,9 @@ async function processNextNonstopItem() {
   }
 
   const item = nonstopQueue.pending_items.shift()!;
+  currentNonstopItem = item;
   nonstopQueue.current_index++;
+  persistNonstopQueueState();
   nonstopQueue.current_title = item.title;
 
   const job_id = `dl_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
@@ -477,8 +540,11 @@ async function processNextNonstopItem() {
     addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
   }
 
+  currentNonstopItem = null;
+  persistNonstopQueueState();
+
   // If stopped, do not trigger next
-  if (!nonstopQueue.is_running) {
+  if (!nonstopQueue.is_running || isShuttingDown) {
     return;
   }
 
@@ -691,6 +757,7 @@ app.post('/api/download-all-nonstop', (req, res) => {
 
   nonstopQueue.pending_items.push(...newItems);
   nonstopQueue.total_items += newItems.length;
+  persistNonstopQueueState();
 
   addLog('info', `Enqueued ${newItems.length} videos into Nonstop Download Queue (Total items: ${nonstopQueue.total_items})`);
 
@@ -729,7 +796,9 @@ app.get('/api/nonstop-queue/status', (req, res) => {
 app.post('/api/nonstop-queue/stop', (req, res) => {
   nonstopQueue.is_running = false;
   nonstopQueue.pending_items = [];
+  currentNonstopItem = null;
   nonstopQueue.current_title = '';
+  persistNonstopQueueState();
 
   addLog('warn', 'Halt request received: Terminating all active processes immediately...');
 
@@ -1142,13 +1211,63 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer = app.listen(PORT, '0.0.0.0', () => {
     addLog('info', `Vortex Video Scraper & Downloader online on http://0.0.0.0:${PORT}`);
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
-startServer().catch((err) => {
+async function shutdownGracefully(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  addLog('warn', `Received ${signal}; beginning graceful shutdown.`);
+
+  // Stop dispatching the next queue item, but let the active runner finish
+  // while Koyeb's termination grace period is still available.
+  nonstopQueue.is_running = false;
+  if (httpServer) {
+    httpServer.close();
+    try { httpServer.closeIdleConnections?.(); } catch {}
+  }
+
+  const deadline = Date.now() + SHUTDOWN_GRACE_MS;
+  while (activeProcesses.size > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  // If the platform's grace window is nearly over, checkpoint the in-flight
+  // item so a subsequent process can retry it, then stop remaining children.
+  if (activeProcesses.size > 0) {
+    if (currentNonstopItem) {
+      nonstopQueue.pending_items.unshift(currentNonstopItem);
+      currentNonstopItem = null;
+    }
+    persistNonstopQueueState();
+    for (const entry of activeProcesses.values()) {
+      try { entry.proc?.kill('SIGTERM'); } catch {}
+    }
+    addLog('warn', `Grace period expired with ${activeProcesses.size} engine process(es) active; saved queue state and sent SIGTERM.`);
+  } else {
+    currentNonstopItem = null;
+    persistNonstopQueueState();
+    addLog('info', 'Active engine processes drained; nonstop queue checkpoint saved.');
+  }
+
+  setTimeout(() => process.exit(0), 1_000).unref();
+}
+
+process.on('SIGTERM', () => { void shutdownGracefully('SIGTERM'); });
+process.on('SIGINT', () => { void shutdownGracefully('SIGINT'); });
+
+restoreNonstopQueueState();
+
+startServer().then(() => {
+  if (nonstopQueue.pending_items.length > 0 && !isShuttingDown) {
+    nonstopQueue.is_running = true;
+    persistNonstopQueueState();
+    processNextNonstopItem();
+  }
+}).catch((err) => {
   console.error('Fatal server startup failure:', err);
   process.exit(1);
 });
