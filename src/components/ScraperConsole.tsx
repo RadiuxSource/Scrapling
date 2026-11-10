@@ -29,6 +29,8 @@ interface ScraperConsoleProps {
   telegramTestResult: any;
   videos: ScrapedVideo[];
   logs: EngineLog[];
+  operationMessage?: string;
+  operationError?: string;
   onDownloadVideo: (video: ScrapedVideo, formatId?: string) => void;
   onBulkDownload: (selectedVideos: ScrapedVideo[]) => void;
   onDownloadAllNonstop: (videos: ScrapedVideo[]) => void;
@@ -70,6 +72,8 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   telegramTestResult,
   videos,
   logs,
+  operationMessage,
+  operationError,
   onDownloadVideo,
   onBulkDownload,
   onDownloadAllNonstop,
@@ -148,34 +152,17 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
     );
   });
 
-  const recentActivity = logs.slice(-12).reverse();
-
   return (
     <div className="space-y-6">
-      {/* Live scraper activity and error feed */}
-      {(isScraping || recentActivity.length > 0) && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <div className="flex items-center gap-2">
-              {isScraping ? <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" /> : <Radio className="w-3.5 h-3.5 text-slate-500" />}
-              <h3 className="text-xs font-semibold text-slate-200">Scraper Activity</h3>
-            </div>
-            <span className={`text-[11px] font-medium ${isScraping ? 'text-cyan-300' : 'text-slate-500'}`}>
-              {isScraping ? 'Background crawling in progress…' : 'Latest engine activity'}
-            </span>
-          </div>
-          <div className="space-y-1.5 max-h-44 overflow-y-auto">
-            {recentActivity.map((entry, index) => (
-              <div key={`${entry.timestamp}-${index}`} className="flex items-start gap-2 text-[11px] font-mono">
-                <span className="text-slate-600 shrink-0">{new Date(entry.timestamp).toLocaleTimeString()}</span>
-                <span className={`shrink-0 uppercase w-12 ${entry.level === 'error' ? 'text-rose-400' : entry.level === 'warn' ? 'text-amber-400' : 'text-cyan-500'}`}>{entry.level}</span>
-                <span className={`break-all ${entry.level === 'error' ? 'text-rose-300' : 'text-slate-400'}`}>{entry.message}</span>
-              </div>
-            ))}
-            {isScraping && recentActivity.length === 0 && (
-              <p className="text-[11px] text-slate-500">Starting crawler and waiting for engine output…</p>
-            )}
-          </div>
+      {(isTesting || isScraping || operationMessage || operationError) && (
+        <div className={`rounded-lg border px-4 py-3 flex items-center gap-3 ${operationError ? 'border-rose-500/40 bg-rose-950/20' : 'border-cyan-500/30 bg-slate-900'}`} role="status">
+          {operationError ? <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" /> :
+            (isTesting || isScraping) ? <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" /> :
+            <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />}
+          <p className={`text-xs font-medium ${operationError ? 'text-rose-300' : 'text-slate-200'}`}>
+            {operationError ? `Operation failed: ${operationError}` :
+              operationMessage || (isTesting ? 'Website test is in progress…' : 'Crawler is in progress…')}
+          </p>
         </div>
       )}
 
