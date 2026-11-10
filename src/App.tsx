@@ -21,6 +21,8 @@ export default function App() {
   const [urlsInput, setUrlsInput] = useState<string>('https://en.wikipedia.org/wiki/Big_Buck_Bunny');
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [isScraping, setIsScraping] = useState<boolean>(false);
+  const [operationMessage, setOperationMessage] = useState<string>('');
+  const [operationError, setOperationError] = useState<string>('');
   const [deepCrawl, setDeepCrawl] = useState<boolean>(true);
   const [maxCrawlVideos, setMaxCrawlVideos] = useState<number>(40);
   const [nonstopStatus, setNonstopStatus] = useState<NonstopQueueStatus | null>(null);
@@ -156,6 +158,8 @@ export default function App() {
     if (urls.length === 0) return;
 
     setIsTesting(true);
+    setOperationError('');
+    setOperationMessage('Website test has started…');
     setInspectionReport(null);
     setTelegramTestResult(null);
     setVideos([]); // Delete previous link's result from scraper console immediately
@@ -173,6 +177,7 @@ export default function App() {
         })
       });
 
+      setOperationMessage('Website test is in progress…');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Test Website request failed (HTTP ' + res.status + ').');
@@ -182,11 +187,15 @@ export default function App() {
       }
       setInspectionReport(data.inspection);
       setTelegramTestResult(data.telegram_notification);
-      setVideos(data.inspection.videos || []);
+      const testVideos = Array.isArray(data.inspection.videos) ? data.inspection.videos : [];
+      setVideos(testVideos);
+      setOperationMessage(testVideos.length ? '' : '');
+      if (!testVideos.length) setOperationError(data.inspection.error || 'Website test completed, but no playable video streams were extracted.');
     } catch (err: any) {
       const message = err?.message || 'Unknown error';
       console.error('Test website failed', err);
-      window.alert('Test Website failed: ' + message);
+      setOperationMessage('');
+      setOperationError(message);
     } finally {
       setIsTesting(false);
       fetchLogs();
@@ -205,6 +214,8 @@ export default function App() {
     if (urls.length === 0) return;
 
     setIsScraping(true);
+    setOperationError('');
+    setOperationMessage('Crawler has started…');
     if (!append) {
       setInspectionReport(null);
       setVideos([]); // Delete previous link's result from scraper console immediately
@@ -228,6 +239,7 @@ export default function App() {
       }
       if (!startData.task_id) throw new Error('Crawler did not return a task ID.');
 
+      setOperationMessage('Crawler is in progress…');
       // Poll the background task instead of holding a long HTTP request open.
       let data: any = null;
       while (true) {
@@ -249,13 +261,24 @@ export default function App() {
       }
       // Accept both the batch response shape and a single-report response shape.
       // Some deployments may wrap the runner payload one level deeper.
-      const payload = data?.result || data;
-      const reports: InspectionReport[] = Array.isArray(payload?.results)
-        ? payload.results
-        : (Array.isArray(payload?.videos) ? [payload as InspectionReport] : []);
-      const extracted: ScrapedVideo[] = reports.flatMap((rep) =>
-        Array.isArray(rep?.videos) ? rep.videos : []
-      );
+      const payload = data?.result || data?.data || data;
+      const rawReports = Array.isArray(payload?.results) ? payload.results
+        : Array.isArray(payload?.reports) ? payload.reports
+        : Array.isArray(payload?.data?.results) ? payload.data.results
+        : (Array.isArray(payload?.videos) ? [payload] : []);
+      const reports: InspectionReport[] = rawReports;
+      const rawVideos: any[] = reports.flatMap((rep: any) => Array.isArray(rep?.videos) ? rep.videos : []);
+      const extracted: ScrapedVideo[] = rawVideos.filter((v: any) => v && (v.media_url || v.url)).map((v: any, index: number) => ({
+        ...v,
+        id: String(v.id || v.media_url || v.url || `crawl-video-${index}`),
+        title: String(v.title || v.name || `Video ${index + 1}`),
+        media_url: String(v.media_url || v.url),
+        page_url: String(v.page_url || v.source_url || ''),
+        resolution: String(v.resolution || 'Adaptive'),
+        format: String(v.format || 'MP4'),
+        protocol: String(v.protocol || 'Stream'),
+        formats_available: Array.isArray(v.formats_available) ? v.formats_available : []
+      }));
 
       if (reports.length > 0) {
         setInspectionReport(reports[0]);
@@ -274,6 +297,14 @@ export default function App() {
         setVideos(extracted);
       }
 
+      if (extracted.length > 0) {
+        setOperationMessage('Crawling completed. Results are ready.');
+        setOperationError('');
+        setTimeout(() => setOperationMessage(''), 1800);
+      } else if (Number(payload?.total_videos_detected || 0) > 0) {
+        throw new Error(`Crawler reported ${payload.total_videos_detected} detected videos, but the result payload contained no video records. Please retry once; if repeated, share the task ID and this message.`);
+      }
+
       if (extracted.length === 0) {
         const failed = payload?.errors?.length || reports.some((rep) => rep.error);
         if (failed) {
@@ -285,7 +316,8 @@ export default function App() {
     } catch (err: any) {
       const message = err?.message || 'Unknown crawler error';
       console.error('Deep scrape failed', err);
-      window.alert('Crawler failed: ' + message);
+      setOperationMessage('');
+      setOperationError(message);
     } finally {
       setIsScraping(false);
       fetchLogs();
@@ -550,6 +582,8 @@ export default function App() {
             telegramTestResult={telegramTestResult}
             videos={videos}
             logs={logs}
+            operationMessage={operationMessage}
+            operationError={operationError}
             onDownloadVideo={handleDownloadVideo}
             onBulkDownload={handleBulkDownload}
             onDownloadAllNonstop={handleDownloadAllNonstop}
