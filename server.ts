@@ -418,7 +418,7 @@ let queueSaveChain: Promise<void> = Promise.resolve();
 let queueStorageWarningShown = false;
 
 function getSupabaseQueueConfig() {
-  const url = (process.env.SUPABASE_URL || '').replace(/\\/$/, '');
+  const url = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
   return url && key ? { url, key } : null;
 }
