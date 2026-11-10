@@ -56,6 +56,18 @@ interface JobStatus {
 const activeJobs = new Map<string, JobStatus>();
 const engineLogs: Array<{ timestamp: string; level: 'info' | 'warn' | 'error'; message: string }> = [];
 
+interface CrawlTask {
+  task_id: string;
+  status: 'running' | 'completed' | 'failed';
+  started_at: number;
+  finished_at?: number;
+  result?: any;
+  error?: string;
+}
+const crawlTasks = new Map<string, CrawlTask>();
+let activeCrawlTaskId: string | null = null;
+
+
 function addLog(level: 'info' | 'warn' | 'error', message: string) {
   const entry = {
     timestamp: new Date().toISOString(),
@@ -645,32 +657,63 @@ app.post('/api/test-website', async (req, res) => {
 });
 
 // 3. Batch Scrape & Deep Website Crawl
-app.post('/api/scrape', async (req, res) => {
+// Background execution prevents Koyeb/reverse-proxy request timeouts on long crawls.
+app.post('/api/scrape', (req, res) => {
   const { urls, deep_crawl, max_subpages, subpage_offset } = req.body;
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ success: false, error: 'A list of URLs is required' });
   }
-
-  // Register each link session and auto-purge older remaining data if > 2 separate links
-  for (const u of urls) {
-    if (typeof u === 'string' && u.trim()) {
-      registerParsedLink(u.trim());
+  if (activeCrawlTaskId) {
+    const active = crawlTasks.get(activeCrawlTaskId);
+    if (active?.status === 'running') {
+      return res.status(409).json({ success: false, error: 'A crawl is already running. Wait for it to finish before starting another URL.' });
     }
+    activeCrawlTaskId = null;
   }
+  const cleanUrls = urls.filter((u: any) => typeof u === 'string' && u.trim()).map((u: string) => u.trim());
+  if (!cleanUrls.length) return res.status(400).json({ success: false, error: 'A valid URL is required' });
 
-  addLog('info', `Starting deep inspection of ${urls.length} URL(s) (Offset: ${subpage_offset || 0}, Max Subpages: ${max_subpages ?? 100}, Deep Crawl: ${deep_crawl ?? true})`);
-  try {
-    const result = await runPythonRunner('scrape-batch', {
-      urls,
-      deep_crawl: deep_crawl !== false,
-      max_subpages: max_subpages !== undefined ? max_subpages : 100,
-      subpage_offset: subpage_offset || 0,
-    });
-    res.json(result);
-  } catch (err: any) {
-    addLog('error', `Batch scrape error: ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
-  }
+  for (const u of cleanUrls) registerParsedLink(u);
+  const taskId = `crawl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now() };
+  crawlTasks.set(taskId, task);
+  activeCrawlTaskId = taskId;
+  addLog('info', `Queued background crawl [${taskId}] for ${cleanUrls.length} URL(s)`);
+  res.status(202).json({ success: true, task_id: taskId, status: 'running' });
+
+  void (async () => {
+    try {
+      addLog('info', `Starting deep inspection of ${cleanUrls.length} URL(s) (Offset: ${subpage_offset || 0}, Max Subpages: ${max_subpages ?? 100}, Deep Crawl: ${deep_crawl ?? true})`);
+      task.result = await runPythonRunner('scrape-batch', {
+        urls: cleanUrls,
+        deep_crawl: deep_crawl !== false,
+        max_subpages: max_subpages !== undefined ? max_subpages : 100,
+        subpage_offset: subpage_offset || 0,
+      });
+      task.status = 'completed';
+      task.finished_at = Date.now();
+      addLog('info', `Background crawl [${taskId}] completed: ${task.result?.total_videos_detected ?? 0} video(s) detected`);
+    } catch (err: any) {
+      task.status = 'failed';
+      task.error = err?.message || 'Unknown crawler error';
+      task.finished_at = Date.now();
+      addLog('error', `Background crawl [${taskId}] failed: ${task.error}`);
+    } finally {
+      if (activeCrawlTaskId === taskId) activeCrawlTaskId = null;
+      const expiry = Date.now() - 30 * 60 * 1000;
+      for (const [id, oldTask] of crawlTasks.entries()) {
+        if (oldTask.finished_at && oldTask.finished_at < expiry) crawlTasks.delete(id);
+      }
+    }
+  })();
+});
+
+app.get('/api/scrape/status/:id', (req, res) => {
+  const task = crawlTasks.get(req.params.id);
+  if (!task) return res.status(404).json({ success: false, error: 'Crawl task not found or server restarted.' });
+  res.json({ success: true, task_id: task.task_id, status: task.status,
+    result: task.status === 'completed' ? task.result : undefined,
+    error: task.error, started_at: task.started_at, finished_at: task.finished_at });
 });
 
 // 4. Download Single Video
