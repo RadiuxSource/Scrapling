@@ -4,6 +4,7 @@ import json
 import time
 import logging
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Force logging to stderr
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -16,14 +17,15 @@ from .config import load_settings, save_settings, LOGS_DIR, REPORTS_DIR, DOWNLOA
 JOBS_DIR = LOGS_DIR / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def handle_test_website(url: str, custom_token: str = None, custom_chat_id: str = None, max_subpages: int = 20, subpage_offset: int = 0):
     inspector = MediaInspector()
     report = inspector.inspect_url(url, deep_crawl=True, max_subpages=max_subpages, subpage_offset=subpage_offset)
-    
+
     settings = load_settings()
     token = custom_token or settings.get("telegram_bot_token")
     chat_id = custom_chat_id or settings.get("telegram_chat_id")
-    
+
     tg_result = {"skipped": True, "reason": "No Telegram credentials configured"}
     if token and chat_id:
         tg = TelegramNotifier(token, chat_id)
@@ -43,54 +45,80 @@ def handle_test_website(url: str, custom_token: str = None, custom_chat_id: str 
     }
     return output
 
+
 def handle_scrape_batch(urls: list, deep_crawl: bool = True, max_subpages: int = 100, subpage_offset: int = 0):
-    """Inspect every submitted URL and preserve partial results if one URL fails."""
-    inspector = MediaInspector()
-    results = []
+    """Inspect submitted root URLs with bounded concurrency and isolate per-URL failures."""
+    submitted_urls = list(dict.fromkeys(
+        u.strip() for u in urls if isinstance(u, str) and u.strip()
+    ))
+    if not submitted_urls:
+        return {
+            "success": False, "completed": True, "total_urls": 0,
+            "completed_urls": 0, "failed_urls": 0,
+            "total_subpages_discovered": 0, "total_subpages_scanned": 0,
+            "total_videos_detected": 0, "errors": [], "results": [],
+        }
+
+    # Avoid nested thread-pool explosion: at most 3 root pages at once,
+    # each with at most 4 subpage workers. This keeps network and memory
+    # pressure bounded while preventing one slow root from serializing all URLs.
+    root_workers = min(3, len(submitted_urls))
+    inspector = MediaInspector(max_workers=4)
+    results_by_index = {}
     failures = []
-    total_videos = 0
-    total_subpages_discovered = 0
-    total_subpages_scanned = 0
-    submitted_urls = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
 
-    for clean_u in submitted_urls:
-        try:
-            rep = inspector.inspect_url(
-                clean_u,
-                deep_crawl=deep_crawl,
-                max_subpages=max_subpages,
-                subpage_offset=subpage_offset,
-            )
-            if not isinstance(rep, dict):
-                raise TypeError("Inspector returned an invalid report")
+    def inspect_one(index, clean_url):
+        rep = inspector.inspect_url(
+            clean_url,
+            deep_crawl=deep_crawl,
+            max_subpages=max_subpages,
+            subpage_offset=subpage_offset,
+        )
+        if not isinstance(rep, dict):
+            raise TypeError("Inspector returned an invalid report")
+        rep.setdefault("page_url", clean_url)
+        rep.setdefault("videos", [])
+        return index, rep
 
-            videos = rep.get("videos") or []
-            rep.setdefault("page_url", clean_u)
-            rep.setdefault("videos", [])
-            results.append(rep)
-            total_videos += len(videos)
-            total_subpages_discovered += int(rep.get("total_subpages_discovered", rep.get("subpages_discovered", 0)) or 0)
-            total_subpages_scanned += int(rep.get("subpages_scanned", 0) or 0)
+    with ThreadPoolExecutor(max_workers=root_workers, thread_name_prefix="root-inspect") as executor:
+        future_to_item = {
+            executor.submit(inspect_one, index, clean_url): (index, clean_url)
+            for index, clean_url in enumerate(submitted_urls)
+        }
+        for future in as_completed(future_to_item):
+            index, clean_url = future_to_item[future]
+            try:
+                result_index, rep = future.result()
+                results_by_index[result_index] = rep
+                if rep.get("error"):
+                    failures.append({"url": clean_url, "error": str(rep["error"])})
+            except Exception as exc:
+                error = str(exc) or exc.__class__.__name__
+                failures.append({"url": clean_url, "error": error})
+                results_by_index[index] = {
+                    "page_url": clean_url,
+                    "success": False,
+                    "error": error,
+                    "videos": [],
+                    "subpages_discovered": 0,
+                    "total_subpages_discovered": 0,
+                    "subpages_scanned": 0,
+                    "has_more_subpages": False,
+                    "next_offset": None,
+                }
+                logging.exception("Batch inspection failed for %s", clean_url)
 
-            if rep.get("error"):
-                failures.append({"url": clean_u, "error": str(rep["error"])})
-        except Exception as exc:
-            error = str(exc) or exc.__class__.__name__
-            failures.append({"url": clean_u, "error": error})
-            results.append({
-                "page_url": clean_u,
-                "success": False,
-                "error": error,
-                "videos": [],
-                "subpages_discovered": 0,
-                "total_subpages_discovered": 0,
-                "subpages_scanned": 0,
-                "has_more_subpages": False,
-                "next_offset": None,
-            })
-            logging.exception("Batch inspection failed for %s", clean_u)
-
+    results = [results_by_index[i] for i in range(len(submitted_urls))]
+    total_videos = sum(len(rep.get("videos") or []) for rep in results)
+    total_subpages_discovered = sum(
+        int(rep.get("total_subpages_discovered", rep.get("subpages_discovered", 0)) or 0)
+        for rep in results
+    )
+    total_subpages_scanned = sum(
+        int(rep.get("subpages_scanned", 0) or 0) for rep in results
+    )
     completed_urls = len(results)
+
     return {
         "success": completed_urls == len(submitted_urls) and not failures,
         "completed": True,
@@ -104,13 +132,20 @@ def handle_scrape_batch(urls: list, deep_crawl: bool = True, max_subpages: int =
         "results": results,
     }
 
+
 def handle_download_job(job_id: str, media_url: str, title: str, format_id: str = None):
     job_file = JOBS_DIR / f"{job_id}.json"
-    
+
     def on_progress(state):
-        with open(job_file, "w", encoding="utf-8") as f:
+        # Atomic replacement prevents the status endpoint from reading a
+        # partially-written JSON document while the downloader is updating it.
+        temp_file = job_file.with_suffix(".json.tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(state, f)
-            
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, job_file)
+
     downloader = VideoDownloader()
     result = downloader.download_video(
         media_url=media_url,
@@ -120,6 +155,7 @@ def handle_download_job(job_id: str, media_url: str, title: str, format_id: str 
         progress_callback=on_progress
     )
     return result
+
 
 def main():
     if len(sys.argv) < 2:
@@ -208,6 +244,7 @@ def main():
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
