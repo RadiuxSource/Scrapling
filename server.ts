@@ -416,11 +416,38 @@ const NONSTOP_QUEUE_FILE = path.join(LOGS_DIR, 'nonstop-queue.json');
 let currentNonstopItem: QueueItem | null = null;
 let queueSaveChain: Promise<void> = Promise.resolve();
 let queueStorageWarningShown = false;
+type QueueRestoreStatus = 'idle' | 'restoring' | 'success' | 'cancelled' | 'error';
+let queueRestoreStatus: QueueRestoreStatus = 'idle';
+let queueRestoreMessage = '';
+let queueRestoreController: AbortController | null = null;
+
+app.get('/api/nonstop-queue/restore-status', (_req, res) => {
+  res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
+});
+
+app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
+  if (queueRestoreStatus !== 'restoring') return res.json({ success: false, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
+  queueRestoreStatus = 'cancelled';
+  queueRestoreMessage = 'Queue restoration cancelled.';
+  queueRestoreController?.abort();
+  addLog('warn', queueRestoreMessage);
+  res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
+});
 
 function getSupabaseQueueConfig() {
-  const url = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const rawUrl = (process.env.SUPABASE_URL || '').trim();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-  return url && key ? { url, key } : null;
+  if (!rawUrl || !key) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.pathname = parsed.pathname.replace(/(?:\/rest\/v1)+\/?$/i, '').replace(/\/$/, '');
+    if (!/^https?:$/.test(parsed.protocol) || parsed.pathname) throw new Error('SUPABASE_URL must be the project URL, e.g. https://<project-ref>.supabase.co (not the dashboard URL).');
+    parsed.search = ''; parsed.hash = '';
+    return { url: parsed.origin, key };
+  } catch (err: any) {
+    if (!queueStorageWarningShown) { queueStorageWarningShown = true; addLog('error', `Invalid Supabase URL: ${err.message}`); }
+    return null;
+  }
 }
 
 function persistNonstopQueueState(forceResume = false): Promise<void> {
@@ -480,56 +507,51 @@ function persistNonstopQueueState(forceResume = false): Promise<void> {
 async function restoreNonstopQueueState() {
   let saved: any = null;
   const config = getSupabaseQueueConfig();
-
+  queueRestoreController = new AbortController();
+  queueRestoreStatus = 'restoring';
+  queueRestoreMessage = 'Restoring queue from the database, please wait…';
   if (config) {
     try {
       const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main&select=state`, {
         headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+        signal: queueRestoreController.signal,
       });
       if (!response.ok) throw new Error(`Supabase returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
       const rows = await response.json() as Array<{ state?: any }>;
-      if (Array.isArray(rows) && rows[0]?.state) {
-        saved = rows[0].state;
-        addLog('info', 'Loaded nonstop queue checkpoint from Supabase durable storage.');
-      }
+      if (Array.isArray(rows) && rows[0]?.state) { saved = rows[0].state; addLog('info', 'Loaded nonstop queue checkpoint from Supabase durable storage.'); }
     } catch (err: any) {
-      addLog('error', `Could not restore queue from Supabase: ${err.message}`);
+      if (err?.name === 'AbortError' || queueRestoreStatus === 'cancelled') {
+        queueRestoreStatus = 'cancelled'; queueRestoreMessage = 'Queue restoration cancelled.'; queueRestoreController = null; return;
+      }
+      queueRestoreStatus = 'error'; queueRestoreMessage = `Could not restore queue from database: ${err.message}`; addLog('error', queueRestoreMessage);
     }
+  } else {
+    queueRestoreStatus = 'error'; queueRestoreMessage = 'Supabase is not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
   }
-
-  // Backward-compatible fallback for deployments that have not configured Supabase yet.
-  if (!saved) {
+  if (!saved && queueRestoreStatus !== 'cancelled') {
     try {
-      if (fs.existsSync(NONSTOP_QUEUE_FILE)) {
-        saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8'));
-        addLog('warn', 'Restored nonstop queue from local checkpoint; this fallback does not survive instance replacement.');
-      }
-    } catch (err: any) {
-      addLog('error', `Could not restore local nonstop queue checkpoint: ${err.message}`);
-    }
+      if (fs.existsSync(NONSTOP_QUEUE_FILE)) { saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8')); addLog('warn', 'Restored nonstop queue from local checkpoint; this fallback does not survive instance replacement.'); }
+    } catch (err: any) { addLog('error', `Could not restore local nonstop queue checkpoint: ${err.message}`); }
   }
-
-  if (!saved) return;
-  const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
-  const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string'
-    ? [saved.current_item]
-    : [];
-  nonstopQueue.pending_items = [...interrupted, ...pending].filter(
-    (item: any) => item && typeof item.media_url === 'string' && item.media_url.trim()
-  );
-  nonstopQueue.total_items = Number(saved.total_items) || nonstopQueue.pending_items.length;
-  nonstopQueue.current_index = Number(saved.current_index) || 0;
-  nonstopQueue.completed_count = Number(saved.completed_count) || 0;
-  nonstopQueue.failed_count = Number(saved.failed_count) || 0;
-  nonstopQueue.current_title = '';
-  currentNonstopItem = null;
-  // Any non-empty recovered queue is automatically resumed after the server starts.
-  nonstopQueue.is_running = nonstopQueue.pending_items.length > 0;
-  if (nonstopQueue.pending_items.length > 0) {
-    addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s); automatic resume is enabled.`);
+  if (queueRestoreStatus === 'cancelled') { queueRestoreController = null; return; }
+  if (saved) {
+    const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
+    const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string' ? [saved.current_item] : [];
+    nonstopQueue.pending_items = [...interrupted, ...pending].filter((item: any) => item && typeof item.media_url === 'string' && item.media_url.trim());
+    nonstopQueue.total_items = Number(saved.total_items) || nonstopQueue.pending_items.length;
+    nonstopQueue.current_index = Number(saved.current_index) || 0;
+    nonstopQueue.completed_count = Number(saved.completed_count) || 0;
+    nonstopQueue.failed_count = Number(saved.failed_count) || 0;
+    nonstopQueue.current_title = ''; currentNonstopItem = null;
+    nonstopQueue.is_running = nonstopQueue.pending_items.length > 0;
+    if (nonstopQueue.pending_items.length > 0) addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s); automatic resume is enabled.`);
   }
+  if (queueRestoreStatus !== 'error') {
+    queueRestoreStatus = 'success';
+    queueRestoreMessage = saved ? `Queue successfully restored. ${nonstopQueue.pending_items.length} unfinished download(s) recovered.` : 'Queue successfully checked. No saved downloads to restore.';
+  }
+  queueRestoreController = null;
 }
-
 async function processNextNonstopItem() {
   if (!nonstopQueue.is_running || nonstopQueue.pending_items.length === 0) {
     nonstopQueue.is_running = false;
@@ -1374,13 +1396,17 @@ process.on('SIGTERM', () => { void shutdownGracefully('SIGTERM'); });
 process.on('SIGINT', () => { void shutdownGracefully('SIGINT'); });
 
 async function bootstrapServer() {
-  await restoreNonstopQueueState();
   await startServer();
-  if (nonstopQueue.pending_items.length > 0 && !isShuttingDown) {
-    nonstopQueue.is_running = true;
-    await persistNonstopQueueState();
-    void processNextNonstopItem();
-  }
+  void (async () => {
+    await restoreNonstopQueueState();
+    if (queueRestoreStatus === 'success' && nonstopQueue.pending_items.length > 0 && !isShuttingDown) {
+      nonstopQueue.is_running = true;
+      await persistNonstopQueueState();
+      void processNextNonstopItem();
+    }
+  })().catch((err) => {
+    queueRestoreStatus = 'error'; queueRestoreMessage = `Queue recovery failed: ${err.message}`; addLog('error', queueRestoreMessage);
+  });
 }
 
 bootstrapServer().catch((err) => {
