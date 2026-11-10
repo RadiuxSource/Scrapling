@@ -166,6 +166,7 @@ export default function App() {
 
     try {
       const targetUrl = urls[0];
+      setOperationMessage('Website test is in progress…');
       const res = await fetch('/api/test-website', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -177,7 +178,6 @@ export default function App() {
         })
       });
 
-      setOperationMessage('Website test is in progress…');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Test Website request failed (HTTP ' + res.status + ').');
@@ -185,12 +185,20 @@ export default function App() {
       if (!data.inspection) {
         throw new Error(data.error || 'The test finished without returning an inspection report.');
       }
-      setInspectionReport(data.inspection);
+      const inspection = data.inspection;
+      const testVideos = Array.isArray(inspection.videos) ? inspection.videos : [];
+      setInspectionReport({ ...inspection, videos: testVideos });
       setTelegramTestResult(data.telegram_notification);
-      const testVideos = Array.isArray(data.inspection.videos) ? data.inspection.videos : [];
       setVideos(testVideos);
-      setOperationMessage(testVideos.length ? '' : '');
-      if (!testVideos.length) setOperationError(data.inspection.error || 'Website test completed, but no playable video streams were extracted.');
+      if (inspection.error || (!inspection.success && testVideos.length === 0)) {
+        setOperationMessage('');
+        setOperationError(inspection.error || 'Website test could not verify any playable video streams.');
+      } else if (testVideos.length > 0) {
+        setOperationMessage('Website test completed. Results are ready.');
+        setTimeout(() => setOperationMessage(''), 1800);
+      } else {
+        setOperationMessage('');
+      }
     } catch (err: any) {
       const message = err?.message || 'Unknown error';
       console.error('Test website failed', err);
@@ -261,7 +269,12 @@ export default function App() {
       }
       // Accept both the batch response shape and a single-report response shape.
       // Some deployments may wrap the runner payload one level deeper.
-      const payload = data?.result || data?.data || data;
+      let payload = data;
+      for (let depth = 0; depth < 3; depth++) {
+        if (payload?.result && typeof payload.result === 'object') payload = payload.result;
+        else if (payload?.data && typeof payload.data === 'object' && !Array.isArray(payload.data)) payload = payload.data;
+        else break;
+      }
       const rawReports = Array.isArray(payload?.results) ? payload.results
         : Array.isArray(payload?.reports) ? payload.reports
         : Array.isArray(payload?.data?.results) ? payload.data.results
@@ -281,7 +294,8 @@ export default function App() {
       }));
 
       if (reports.length > 0) {
-        setInspectionReport(reports[0]);
+        const firstReport = reports[0];
+        setInspectionReport({ ...firstReport, videos: Array.isArray(firstReport.videos) ? firstReport.videos : [] });
       } else if (payload?.error || payload?.errors?.length) {
         const details = payload.error || payload.errors.map((item: any) => item.error || String(item)).join('; ');
         throw new Error(details);
