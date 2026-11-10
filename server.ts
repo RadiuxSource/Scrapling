@@ -414,9 +414,18 @@ let nonstopQueue: NonstopQueueState = {
 
 const NONSTOP_QUEUE_FILE = path.join(LOGS_DIR, 'nonstop-queue.json');
 let currentNonstopItem: QueueItem | null = null;
+let queueSaveChain: Promise<void> = Promise.resolve();
+let queueStorageWarningShown = false;
 
-function persistNonstopQueueState() {
+function getSupabaseQueueConfig() {
+  const url = (process.env.SUPABASE_URL || '').replace(/\\/$/, '');
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  return url && key ? { url, key } : null;
+}
+
+function persistNonstopQueueState(forceResume = false): Promise<void> {
   const state = {
+    is_running: forceResume ? (nonstopQueue.pending_items.length > 0 || Boolean(currentNonstopItem)) : nonstopQueue.is_running,
     total_items: nonstopQueue.total_items,
     current_index: nonstopQueue.current_index,
     completed_count: nonstopQueue.completed_count,
@@ -425,37 +434,99 @@ function persistNonstopQueueState() {
     current_item: currentNonstopItem,
     saved_at: Date.now(),
   };
-  const tempFile = `${NONSTOP_QUEUE_FILE}.tmp`;
-  try {
-    fs.writeFileSync(tempFile, JSON.stringify(state), 'utf-8');
-    fs.renameSync(tempFile, NONSTOP_QUEUE_FILE);
-  } catch (err: any) {
-    addLog('error', `Could not persist nonstop queue state: ${err.message}`);
-    try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch {}
-  }
+
+  // Serialize writes so a slower earlier request cannot overwrite a newer queue snapshot.
+  queueSaveChain = queueSaveChain.then(async () => {
+    const tempFile = `${NONSTOP_QUEUE_FILE}.tmp`;
+    try {
+      fs.writeFileSync(tempFile, JSON.stringify(state), 'utf-8');
+      fs.renameSync(tempFile, NONSTOP_QUEUE_FILE);
+    } catch (err: any) {
+      addLog('error', `Could not persist local nonstop queue checkpoint: ${err.message}`);
+      try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch {}
+    }
+
+    const config = getSupabaseQueueConfig();
+    if (!config) {
+      if (!queueStorageWarningShown) {
+        queueStorageWarningShown = true;
+        addLog('warn', 'Supabase queue backup is not configured. Queue is only saved on the instance filesystem and may be lost when Koyeb replaces the instance. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable durable recovery.');
+      }
+      return;
+    }
+
+    try {
+      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main`, {
+        method: 'POST',
+        headers: {
+          apikey: config.key,
+          Authorization: `Bearer ${config.key}`,
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates,return=minimal',
+        },
+        body: JSON.stringify({ id: 'main', state, updated_at: new Date().toISOString() }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`Supabase returned HTTP ${response.status}: ${detail.slice(0, 300)}`);
+      }
+    } catch (err: any) {
+      addLog('error', `Supabase queue backup failed; local checkpoint was retained: ${err.message}`);
+    }
+  });
+  return queueSaveChain;
 }
 
-function restoreNonstopQueueState() {
-  try {
-    if (!fs.existsSync(NONSTOP_QUEUE_FILE)) return;
-    const saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8'));
-    const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
-    const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string'
-      ? [saved.current_item]
-      : [];
-    nonstopQueue.pending_items = [...interrupted, ...pending].filter(
-      (item: any) => item && typeof item.media_url === 'string' && item.media_url.trim()
-    );
-    nonstopQueue.total_items = Number(saved.total_items) || nonstopQueue.pending_items.length;
-    nonstopQueue.current_index = Number(saved.current_index) || 0;
-    nonstopQueue.completed_count = Number(saved.completed_count) || 0;
-    nonstopQueue.failed_count = Number(saved.failed_count) || 0;
-    currentNonstopItem = null;
-    if (nonstopQueue.pending_items.length > 0) {
-      addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s) from the local queue checkpoint.`);
+async function restoreNonstopQueueState() {
+  let saved: any = null;
+  const config = getSupabaseQueueConfig();
+
+  if (config) {
+    try {
+      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main&select=state`, {
+        headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+      });
+      if (!response.ok) throw new Error(`Supabase returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      const rows = await response.json() as Array<{ state?: any }>;
+      if (Array.isArray(rows) && rows[0]?.state) {
+        saved = rows[0].state;
+        addLog('info', 'Loaded nonstop queue checkpoint from Supabase durable storage.');
+      }
+    } catch (err: any) {
+      addLog('error', `Could not restore queue from Supabase: ${err.message}`);
     }
-  } catch (err: any) {
-    addLog('error', `Could not restore nonstop queue checkpoint: ${err.message}`);
+  }
+
+  // Backward-compatible fallback for deployments that have not configured Supabase yet.
+  if (!saved) {
+    try {
+      if (fs.existsSync(NONSTOP_QUEUE_FILE)) {
+        saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8'));
+        addLog('warn', 'Restored nonstop queue from local checkpoint; this fallback does not survive instance replacement.');
+      }
+    } catch (err: any) {
+      addLog('error', `Could not restore local nonstop queue checkpoint: ${err.message}`);
+    }
+  }
+
+  if (!saved) return;
+  const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
+  const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string'
+    ? [saved.current_item]
+    : [];
+  nonstopQueue.pending_items = [...interrupted, ...pending].filter(
+    (item: any) => item && typeof item.media_url === 'string' && item.media_url.trim()
+  );
+  nonstopQueue.total_items = Number(saved.total_items) || nonstopQueue.pending_items.length;
+  nonstopQueue.current_index = Number(saved.current_index) || 0;
+  nonstopQueue.completed_count = Number(saved.completed_count) || 0;
+  nonstopQueue.failed_count = Number(saved.failed_count) || 0;
+  nonstopQueue.current_title = '';
+  currentNonstopItem = null;
+  // Any non-empty recovered queue is automatically resumed after the server starts.
+  nonstopQueue.is_running = nonstopQueue.pending_items.length > 0;
+  if (nonstopQueue.pending_items.length > 0) {
+    addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s); automatic resume is enabled.`);
   }
 }
 
@@ -463,6 +534,7 @@ async function processNextNonstopItem() {
   if (!nonstopQueue.is_running || nonstopQueue.pending_items.length === 0) {
     nonstopQueue.is_running = false;
     nonstopQueue.current_title = '';
+    await persistNonstopQueueState();
     addLog('info', `Nonstop queue finished: ${nonstopQueue.completed_count} completed, ${nonstopQueue.failed_count} failed.`);
     return;
   }
@@ -786,7 +858,7 @@ app.post('/api/download', async (req, res) => {
 });
 
 // 4b. Download All Nonstop Queue
-app.post('/api/download-all-nonstop', (req, res) => {
+app.post('/api/download-all-nonstop', async (req, res) => {
   const { videos } = req.body;
   if (!Array.isArray(videos) || videos.length === 0) {
     return res.status(400).json({ success: false, error: 'Videos array is required' });
@@ -800,13 +872,13 @@ app.post('/api/download-all-nonstop', (req, res) => {
 
   nonstopQueue.pending_items.push(...newItems);
   nonstopQueue.total_items += newItems.length;
-  persistNonstopQueueState();
+  nonstopQueue.is_running = true;
+  await persistNonstopQueueState();
 
   addLog('info', `Enqueued ${newItems.length} videos into Nonstop Download Queue (Total items: ${nonstopQueue.total_items})`);
 
-  if (!nonstopQueue.is_running) {
-    nonstopQueue.is_running = true;
-    processNextNonstopItem();
+  if (nonstopQueue.is_running && !currentNonstopItem) {
+    void processNextNonstopItem();
   }
 
   res.json({
@@ -836,12 +908,12 @@ app.get('/api/nonstop-queue/status', (req, res) => {
   });
 });
 
-app.post('/api/nonstop-queue/stop', (req, res) => {
+app.post('/api/nonstop-queue/stop', async (req, res) => {
   nonstopQueue.is_running = false;
   nonstopQueue.pending_items = [];
   currentNonstopItem = null;
   nonstopQueue.current_title = '';
-  persistNonstopQueueState();
+  await persistNonstopQueueState();
 
   addLog('warn', 'Halt request received: Terminating all active processes immediately...');
 
@@ -1278,22 +1350,21 @@ async function shutdownGracefully(signal: string) {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  // If the platform's grace window is nearly over, checkpoint the in-flight
-  // item so a subsequent process can retry it, then stop remaining children.
+  // Requeue the in-flight item even if its child exited during shutdown. The
+  // platform may replace the filesystem, so the durable snapshot must exist first.
+  if (currentNonstopItem) {
+    nonstopQueue.pending_items.unshift(currentNonstopItem);
+    currentNonstopItem = null;
+  }
+  await persistNonstopQueueState(true);
+
   if (activeProcesses.size > 0) {
-    if (currentNonstopItem) {
-      nonstopQueue.pending_items.unshift(currentNonstopItem);
-      currentNonstopItem = null;
-    }
-    persistNonstopQueueState();
     for (const entry of activeProcesses.values()) {
       try { entry.proc?.kill('SIGTERM'); } catch {}
     }
-    addLog('warn', `Grace period expired with ${activeProcesses.size} engine process(es) active; saved queue state and sent SIGTERM.`);
+    addLog('warn', `Grace period expired with ${activeProcesses.size} engine process(es) active; saved resumable queue state and sent SIGTERM.`);
   } else {
-    currentNonstopItem = null;
-    persistNonstopQueueState();
-    addLog('info', 'Active engine processes drained; nonstop queue checkpoint saved.');
+    addLog('info', 'Active engine processes drained; resumable nonstop queue checkpoint saved.');
   }
 
   setTimeout(() => process.exit(0), 1_000).unref();
@@ -1302,15 +1373,17 @@ async function shutdownGracefully(signal: string) {
 process.on('SIGTERM', () => { void shutdownGracefully('SIGTERM'); });
 process.on('SIGINT', () => { void shutdownGracefully('SIGINT'); });
 
-restoreNonstopQueueState();
-
-startServer().then(() => {
+async function bootstrapServer() {
+  await restoreNonstopQueueState();
+  await startServer();
   if (nonstopQueue.pending_items.length > 0 && !isShuttingDown) {
     nonstopQueue.is_running = true;
-    persistNonstopQueueState();
-    processNextNonstopItem();
+    await persistNonstopQueueState();
+    void processNextNonstopItem();
   }
-}).catch((err) => {
+}
+
+bootstrapServer().catch((err) => {
   console.error('Fatal server startup failure:', err);
   process.exit(1);
 });
