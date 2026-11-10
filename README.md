@@ -324,6 +324,16 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 ## Fix log
 
+### 10/11 — Supabase URL validation still rejecting a valid Project URL
+- Hardened `SUPABASE_URL` parsing to accept the canonical `https://<project-ref>.supabase.co` origin, an optional trailing slash, and the `/rest/v1` REST endpoint.
+- The parser now explicitly validates the Supabase project hostname and rejects unexpected path segments, rather than treating the normal root slash as an invalid path.
+- Strips accidental surrounding single or double quotes from the environment value, a common copy/paste issue in deployment dashboards.
+- Keeps dashboard project URL conversion support and normalizes accepted values to the project origin before making REST requests.
+- For Koyeb, set `SUPABASE_URL=https://<project-ref>.supabase.co` (without quotes); ensure `SUPABASE_SERVICE_ROLE_KEY` is from the same Supabase project, then trigger a fresh deployment so the new server build is used.
+- This fix validates URL formatting only; it does not verify the API key, table existence, or network connectivity.
+
+
+
 ### 10/11 — Supabase queue restore URL and API-path errors
 - Fixed Supabase URL normalization used by durable nonstop-queue restore and backup.
 - The server now accepts the standard Supabase Project URL (`https://<project-ref>.supabase.co`), a Project URL with a trailing `/rest/v1`, and the Supabase project dashboard URL (`https://supabase.com/dashboard/project/<project-ref>`), converting the dashboard form to the matching project API hostname.
