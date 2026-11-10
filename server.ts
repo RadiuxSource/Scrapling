@@ -422,7 +422,13 @@ let queueRestoreMessage = '';
 let queueRestoreController: AbortController | null = null;
 
 app.get('/api/nonstop-queue/restore-status', (_req, res) => {
-  res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
+  const restore = { status: queueRestoreStatus, message: queueRestoreMessage };
+  res.json({ success: true, restore });
+  // Deliver the one-time success/cancel notice to the UI once, then clear it.
+  if (queueRestoreStatus === 'success' || queueRestoreStatus === 'cancelled') {
+    queueRestoreStatus = 'idle';
+    queueRestoreMessage = '';
+  }
 });
 
 app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
