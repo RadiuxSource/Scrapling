@@ -284,6 +284,18 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 ## Troubleshooting
 
+**Supabase reports "Invalid Supabase URL"**
+- In Koyeb, set `SUPABASE_URL` to the Supabase **Project URL**, normally `https://<project-ref>.supabase.co`.
+- Find it in Supabase → **Project Settings** → **API** → **Project URL**.
+- Do not use the generic dashboard URL `https://supabase.com/dashboard`. The server also recognizes a project dashboard URL such as `https://supabase.com/dashboard/project/<project-ref>` and converts it to the matching project API hostname.
+- A URL ending in `/rest/v1` is also accepted; the server normalizes it before making REST requests.
+- Keep `SUPABASE_SERVICE_ROLE_KEY` from the same project. The URL and key must belong to the same Supabase project.
+- After changing Koyeb environment variables, save and redeploy the service.
+
+**Supabase reports a REST API path error (PGRST125 / HTTP 404)**
+- Verify that `SUPABASE_URL` is the project URL, not a table URL, SQL Editor URL, or unrelated dashboard page.
+- Confirm the `vortex_queue_state` table exists in that same project and that `supabase-queue-schema.sql` ran successfully.
+
 **The app starts but downloads stop after an instance restart**
 - Check that both Supabase environment variables are configured correctly.
 - Confirm that `supabase-queue-schema.sql` was executed successfully.
@@ -309,6 +321,16 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 - Ensure the bot is a member/admin where required.
 - Check optional client API credentials if using a client-based upload route.
 - Review the Logs section for the underlying Telegram response.
+
+## Fix log
+
+### 10/11 — Supabase queue restore URL and API-path errors
+- Fixed Supabase URL normalization used by durable nonstop-queue restore and backup.
+- The server now accepts the standard Supabase Project URL (`https://<project-ref>.supabase.co`), a Project URL with a trailing `/rest/v1`, and the Supabase project dashboard URL (`https://supabase.com/dashboard/project/<project-ref>`), converting the dashboard form to the matching project API hostname.
+- Added clearer validation guidance when an unrelated dashboard path or malformed URL is supplied.
+- Documented that `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` must come from the same Supabase project.
+- Added troubleshooting steps for `PGRST125` / HTTP 404 invalid REST paths.
+- The earlier queue restore UI includes a cancellable “Restoring queue…” notice and a temporary success confirmation. End-to-end restore still needs to be verified against the configured Supabase project after redeployment.
 
 ## Responsible use
 
