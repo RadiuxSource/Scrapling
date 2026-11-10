@@ -26,6 +26,7 @@ export default function App() {
   const [deepCrawl, setDeepCrawl] = useState<boolean>(true);
   const [maxCrawlVideos, setMaxCrawlVideos] = useState<number>(40);
   const [nonstopStatus, setNonstopStatus] = useState<NonstopQueueStatus | null>(null);
+  const [queueRestore, setQueueRestore] = useState<{ status: 'idle' | 'restoring' | 'success' | 'cancelled' | 'error'; message: string }>({ status: 'idle', message: '' });
 
   const [inspectionReport, setInspectionReport] = useState<InspectionReport | null>(null);
   const [telegramTestResult, setTelegramTestResult] = useState<any | null>(null);
@@ -98,6 +99,22 @@ export default function App() {
     }
   }, []);
 
+  const fetchQueueRestoreStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/nonstop-queue/restore-status');
+      const data = await res.json();
+      if (data.success && data.restore) setQueueRestore(data.restore);
+    } catch (e) { console.error('Failed to load queue restore status', e); }
+  }, []);
+
+  const handleCancelQueueRestore = async () => {
+    try {
+      const res = await fetch('/api/nonstop-queue/restore-cancel', { method: 'POST' });
+      const data = await res.json();
+      if (data.restore) setQueueRestore(data.restore);
+    } catch (e) { console.error('Failed to cancel queue restoration', e); }
+  };
+
   const fetchFiles = useCallback(async () => {
     try {
       const res = await fetch('/api/downloads');
@@ -126,9 +143,18 @@ export default function App() {
     fetchSettings();
     fetchJobs();
     fetchNonstopStatus();
+    fetchQueueRestoreStatus();
     fetchFiles();
     fetchLogs();
-  }, [fetchSettings, fetchJobs, fetchNonstopStatus, fetchFiles, fetchLogs]);
+  }, [fetchSettings, fetchJobs, fetchNonstopStatus, fetchQueueRestoreStatus, fetchFiles, fetchLogs]);
+
+  useEffect(() => {
+    if (queueRestore.status !== 'success' && queueRestore.status !== 'cancelled') return;
+    const timeout = window.setTimeout(() => {
+      setQueueRestore((current) => current.status === 'success' || current.status === 'cancelled' ? { status: 'idle', message: '' } : current);
+    }, 5000);
+    return () => window.clearTimeout(timeout);
+  }, [queueRestore.status]);
 
   // Polling for jobs and nonstop queue
   useEffect(() => {
@@ -140,13 +166,14 @@ export default function App() {
     const interval = setInterval(() => {
       fetchJobs();
       fetchNonstopStatus();
+      fetchQueueRestoreStatus();
       if (hasActiveJobs || isNonstopRunning) {
         fetchFiles();
       }
     }, hasActiveJobs || isNonstopRunning ? 1200 : 3500);
 
     return () => clearInterval(interval);
-  }, [jobs, nonstopStatus, fetchJobs, fetchNonstopStatus, fetchFiles]);
+  }, [jobs, nonstopStatus, fetchJobs, fetchNonstopStatus, fetchQueueRestoreStatus, fetchFiles]);
 
   // Dedicated "Test Website" action
   const handleTestWebsite = async () => {
@@ -607,6 +634,8 @@ export default function App() {
             maxCrawlVideos={maxCrawlVideos}
             setMaxCrawlVideos={setMaxCrawlVideos}
             nonstopStatus={nonstopStatus}
+            queueRestore={queueRestore}
+            onCancelQueueRestore={handleCancelQueueRestore}
             onStopNonstopQueue={handleStopNonstopQueue}
             onClearResults={handleClearResults}
           />
