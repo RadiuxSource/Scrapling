@@ -446,9 +446,21 @@ function getSupabaseQueueConfig() {
   if (!rawUrl || !key) return null;
   try {
     const parsed = new URL(rawUrl);
-    parsed.pathname = parsed.pathname.replace(/(?:\/rest\/v1)+\/?$/i, '').replace(/\/$/, '');
-    if (!/^https?:$/.test(parsed.protocol) || parsed.pathname) throw new Error('SUPABASE_URL must be the project URL, e.g. https://<project-ref>.supabase.co (not the dashboard URL).');
-    parsed.search = ''; parsed.hash = '';
+    if (!/^https?:$/.test(parsed.protocol)) throw new Error('SUPABASE_URL must use https://.');
+
+    // Accept the project URL, its /rest/v1 endpoint, or the Supabase dashboard
+    // project URL. Convert dashboard URLs to the matching project API hostname.
+    const dashboardProject = parsed.pathname.match(/^\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i);
+    if ((parsed.hostname === 'supabase.com' || parsed.hostname === 'www.supabase.com') && dashboardProject) {
+      parsed.hostname = `${dashboardProject[1]}.supabase.co`;
+      parsed.pathname = '';
+    } else {
+      parsed.pathname = parsed.pathname.replace(/(?:\/rest\/v1)+\/?$/i, '').replace(/\/$/, '');
+      if (parsed.pathname) throw new Error('Use the Project URL from Supabase → Project Settings → API (https://<project-ref>.supabase.co), not a dashboard page URL.');
+    }
+
+    parsed.search = '';
+    parsed.hash = '';
     return { url: parsed.origin, key };
   } catch (err: any) {
     if (!queueStorageWarningShown) { queueStorageWarningShown = true; addLog('error', `Invalid Supabase URL: ${err.message}`); }
