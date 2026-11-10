@@ -16,7 +16,7 @@ import {
   Radio,
   Square
 } from 'lucide-react';
-import { ScrapedVideo, InspectionReport, NonstopQueueStatus } from '../types';
+import { ScrapedVideo, InspectionReport, NonstopQueueStatus, EngineLog } from '../types';
 
 interface ScraperConsoleProps {
   urlsInput: string;
@@ -28,6 +28,7 @@ interface ScraperConsoleProps {
   inspectionReport: InspectionReport | null;
   telegramTestResult: any;
   videos: ScrapedVideo[];
+  logs: EngineLog[];
   onDownloadVideo: (video: ScrapedVideo, formatId?: string) => void;
   onBulkDownload: (selectedVideos: ScrapedVideo[]) => void;
   onDownloadAllNonstop: (videos: ScrapedVideo[]) => void;
@@ -68,6 +69,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   inspectionReport,
   telegramTestResult,
   videos,
+  logs,
   onDownloadVideo,
   onBulkDownload,
   onDownloadAllNonstop,
@@ -146,8 +148,37 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
     );
   });
 
+  const recentActivity = logs.slice(-12).reverse();
+
   return (
     <div className="space-y-6">
+      {/* Live scraper activity and error feed */}
+      {(isScraping || recentActivity.length > 0) && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="flex items-center gap-2">
+              {isScraping ? <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" /> : <Radio className="w-3.5 h-3.5 text-slate-500" />}
+              <h3 className="text-xs font-semibold text-slate-200">Scraper Activity</h3>
+            </div>
+            <span className={`text-[11px] font-medium ${isScraping ? 'text-cyan-300' : 'text-slate-500'}`}>
+              {isScraping ? 'Background crawling in progress…' : 'Latest engine activity'}
+            </span>
+          </div>
+          <div className="space-y-1.5 max-h-44 overflow-y-auto">
+            {recentActivity.map((entry, index) => (
+              <div key={`${entry.timestamp}-${index}`} className="flex items-start gap-2 text-[11px] font-mono">
+                <span className="text-slate-600 shrink-0">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                <span className={`shrink-0 uppercase w-12 ${entry.level === 'error' ? 'text-rose-400' : entry.level === 'warn' ? 'text-amber-400' : 'text-cyan-500'}`}>{entry.level}</span>
+                <span className={`break-all ${entry.level === 'error' ? 'text-rose-300' : 'text-slate-400'}`}>{entry.message}</span>
+              </div>
+            ))}
+            {isScraping && recentActivity.length === 0 && (
+              <p className="text-[11px] text-slate-500">Starting crawler and waiting for engine output…</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Nonstop Queue Live Status Banner */}
       {nonstopStatus && nonstopStatus.is_running && (
         <div className="bg-gradient-to-r from-cyan-950/80 via-slate-900 to-blue-950/80 border border-cyan-500/50 rounded-xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
