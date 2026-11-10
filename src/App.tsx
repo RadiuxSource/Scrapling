@@ -237,6 +237,8 @@ export default function App() {
         if (!statusRes.ok) {
           throw new Error(statusData.error || 'Could not retrieve crawler status (HTTP ' + statusRes.status + ').');
         }
+        // Keep the console activity feed live while the background worker runs.
+        await fetchLogs();
         if (statusData.status === 'completed') {
           data = statusData.result;
           break;
@@ -245,28 +247,39 @@ export default function App() {
           throw new Error(statusData.error || 'Crawler failed.');
         }
       }
-      if (data?.error && (!data.results || data.results.length === 0)) {
-        throw new Error(data.error);
+      // Accept both the batch response shape and a single-report response shape.
+      // Some deployments may wrap the runner payload one level deeper.
+      const payload = data?.result || data;
+      const reports: InspectionReport[] = Array.isArray(payload?.results)
+        ? payload.results
+        : (Array.isArray(payload?.videos) ? [payload as InspectionReport] : []);
+      const extracted: ScrapedVideo[] = reports.flatMap((rep) =>
+        Array.isArray(rep?.videos) ? rep.videos : []
+      );
+
+      if (reports.length > 0) {
+        setInspectionReport(reports[0]);
+      } else if (payload?.error || payload?.errors?.length) {
+        const details = payload.error || payload.errors.map((item: any) => item.error || String(item)).join('; ');
+        throw new Error(details);
       }
 
-      if (data?.results && data.results.length > 0) {
-        setInspectionReport(data.results[0]);
-        const extracted: ScrapedVideo[] = [];
-        data.results.forEach((rep: InspectionReport) => {
-          if (rep.videos) {
-            extracted.push(...rep.videos);
-          }
+      if (append) {
+        setVideos((prev) => {
+          const seen = new Set(prev.map((v) => v.media_url || v.id));
+          const newOnes = extracted.filter((v) => !seen.has(v.media_url || v.id));
+          return [...prev, ...newOnes];
         });
+      } else {
+        setVideos(extracted);
+      }
 
-        if (append) {
-          setVideos((prev) => {
-            const seen = new Set(prev.map((v) => v.media_url || v.id));
-            const newOnes = extracted.filter((v) => !seen.has(v.media_url || v.id));
-            return [...prev, ...newOnes];
-          });
-        } else {
-          // Replace previous link's results completely with current link's extracted videos
-          setVideos(extracted);
+      if (extracted.length === 0) {
+        const failed = payload?.errors?.length || reports.some((rep) => rep.error);
+        if (failed) {
+          const details = (payload.errors || reports.filter((rep) => rep.error).map((rep) => ({ error: rep.error })))
+            .map((item: any) => item.error || String(item)).join('; ');
+          throw new Error(details || 'Crawl finished, but one or more pages failed.');
         }
       }
     } catch (err: any) {
@@ -536,6 +549,7 @@ export default function App() {
             inspectionReport={inspectionReport}
             telegramTestResult={telegramTestResult}
             videos={videos}
+            logs={logs}
             onDownloadVideo={handleDownloadVideo}
             onBulkDownload={handleBulkDownload}
             onDownloadAllNonstop={handleDownloadAllNonstop}
