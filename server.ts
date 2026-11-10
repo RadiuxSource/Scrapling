@@ -441,22 +441,28 @@ app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
 });
 
 function getSupabaseQueueConfig() {
-  const rawUrl = (process.env.SUPABASE_URL || '').trim();
+  // Koyeb environment values are sometimes pasted with surrounding quotes.
+  const rawValue = (process.env.SUPABASE_URL || '').trim();
+  const rawUrl = rawValue.replace(/^["']|["']$/g, '').trim();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
   if (!rawUrl || !key) return null;
   try {
     const parsed = new URL(rawUrl);
-    if (!/^https?:$/.test(parsed.protocol)) throw new Error('SUPABASE_URL must use https://.');
+    if (parsed.protocol !== 'https:') throw new Error('SUPABASE_URL must use https://.');
 
-    // Accept the project URL, its /rest/v1 endpoint, or the Supabase dashboard
-    // project URL. Convert dashboard URLs to the matching project API hostname.
+    // Accept the canonical project origin, its REST endpoint, and dashboard
+    // project URLs. A root slash is normal in URL parsing and must be accepted.
     const dashboardProject = parsed.pathname.match(/^\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i);
     if ((parsed.hostname === 'supabase.com' || parsed.hostname === 'www.supabase.com') && dashboardProject) {
       parsed.hostname = `${dashboardProject[1]}.supabase.co`;
       parsed.pathname = '';
     } else {
-      parsed.pathname = parsed.pathname.replace(/(?:\/rest\/v1)+\/?$/i, '').replace(/\/$/, '');
-      if (parsed.pathname) throw new Error('Use the Project URL from Supabase → Project Settings → API (https://<project-ref>.supabase.co), not a dashboard page URL.');
+      const isProjectHost = /^[a-z0-9-]+\.supabase\.co$/i.test(parsed.hostname);
+      const normalizedPath = parsed.pathname.replace(/\/+$/, '').replace(/(?:\/rest\/v1)+$/i, '');
+      if (!isProjectHost || normalizedPath) {
+        throw new Error('Use the Supabase Project URL, e.g. https://<project-ref>.supabase.co. A trailing slash or /rest/v1 is also accepted.');
+      }
+      parsed.pathname = '';
     }
 
     parsed.search = '';
