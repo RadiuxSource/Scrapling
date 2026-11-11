@@ -1318,7 +1318,7 @@ app.get('/api/nonstop-queue/restore-status', async (_req, res) => {
     runtime.restoreNoticeUntil = 0;
   }
   const browserId = 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase();
-  res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage, browser_id: browserId, workspace_id: workspaceId } });
+  res.json({ success: true, restore: { status: runtime.restoreStatus, message: `${runtime.restoreMessage} Browser ID: ${browserId}.`, browser_id: browserId, workspace_id: workspaceId } });
 });
 
 app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
