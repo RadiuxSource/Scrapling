@@ -48,12 +48,12 @@ The Bot API upload path may split larger media into smaller parts. When optional
 
 The deployment operator configures these server-side environment variables:
 
-- `OWNER_ACCESS_SECRET`: long random secret for the protected owner dashboard API.
+- `OWNER_ACCESS_SECRET`: long random secret for the protected owner dashboard API. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"` and store it only in Koyeb Secrets.
 - `OWNER_TELEGRAM_USER_ID`: numeric Telegram user ID allowed to use owner commands. Get this number by messaging `@userinfobot` from your own Telegram account; use the numeric ID, not your username.
-- `LOG_TELEGRAM_CHAT_ID`: private log group/channel destination.
+- `LOG_TELEGRAM_CHAT_ID`: private log group/channel destination. This is the default destination when a browser does not provide a complete custom bot/channel pair.
 - `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. If omitted, `TELEGRAM_BOT_TOKEN` is used as the default bot.
 
-Add the default monitoring bot to the log group as an administrator with permission to send messages and documents. For invite-link creation in a destination channel, the resolved bot must also have permission to invite users. The public endpoint `/api/telegram/default-bot` exposes only the configured bot's public username, never its token.
+Add the default monitoring bot to the log group as an administrator with permission to send messages and documents. If `LOG_TELEGRAM_BOT_TOKEN` is blank, the bot created for `TELEGRAM_BOT_TOKEN` is the default bot. `LOG_TELEGRAM_CHAT_ID` is required; the deprecated `TELEGRAM_CHAT_ID` is not used for owner monitoring. For invite-link creation in a destination channel, the resolved bot must also have permission to invite users. The public endpoint `/api/telegram/default-bot` exposes only the configured bot's public username, never its token.
 
 Owner commands (only the configured numeric owner ID is authorized):
 
