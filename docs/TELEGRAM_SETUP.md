@@ -68,3 +68,9 @@ Operational monitoring records server starts/stops, queue restore outcomes, craw
 Each workspace receives a stable label such as `BRW-4A91C6D2F0`. This is a pseudonymous browser workspace ID, not a verified person's identity. Browser names are null unless explicitly supplied; IP addresses, browser fingerprints, and raw user-agent strings are not collected for this feature.
 
 The log group is operational-only. User media uploads continue to use the configured per-browser media destination and are not redirected to the private log group.
+
+### Dedicated forum topic (optional)
+
+You do not need a separate group if you already have a Telegram supergroup with Topics enabled. Add the default monitoring bot as an administrator with permission to manage topics. If `LOG_TELEGRAM_THREAD_ID` is blank, Vortex attempts to create a **Vortex Operational Logs** topic automatically using the Bot API. If topic creation is unavailable, it falls back to posting in the main group. You can instead set `LOG_TELEGRAM_THREAD_ID` to an existing topic ID.
+
+The Bot API cannot create a brand-new group or supergroup. A human group owner must create that group and add the bot; Vortex can then create a topic inside it when the required permissions are granted.

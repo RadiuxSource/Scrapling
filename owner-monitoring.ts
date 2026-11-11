@@ -15,6 +15,8 @@ const SESSION_TTL = 12 * 60 * 60 * 1000;
 const OWNER_SECRET = (process.env.OWNER_ACCESS_SECRET || '').trim();
 const OWNER_TELEGRAM_ID = (process.env.OWNER_TELEGRAM_USER_ID || '').trim();
 const LOG_CHAT_ID = (process.env.LOG_TELEGRAM_CHAT_ID || '').trim();
+const CONFIGURED_LOG_THREAD_ID = Number(process.env.LOG_TELEGRAM_THREAD_ID || 0) || null;
+let logThreadId: number | null = CONFIGURED_LOG_THREAD_ID;
 const LOG_BOT_TOKEN = (process.env.LOG_TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const messageIndexFile = (root: string) => path.join(root, 'data', 'owner-monitoring', 'telegram-message-index.json');
@@ -79,6 +81,7 @@ async function sendActionMessage(root: string, text: string, actionId?: string, 
   try {
     const result: any = await telegram('sendMessage', {
       chat_id: LOG_CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true,
+      ...(logThreadId ? { message_thread_id: logThreadId } : {}),
     });
     if (actionId && phase && result?.message_id) rememberMessage(root, result.message_id, actionId, phase);
     return result?.message_id ?? null;
@@ -157,11 +160,12 @@ function ownerMiddleware(req: Request, res: Response, next: NextFunction) {
   if (!validSession(value)) return res.status(401).json({ success: false, error: 'Owner authentication required.' });
   next();
 }
-async function sendDocument(chatId: string | number, file: string, caption: string) {
+async function sendDocument(chatId: string | number, file: string, caption: string, threadId?: number) {
   if (!LOG_BOT_TOKEN || !fs.existsSync(file)) return;
   const form = new FormData();
   form.append('chat_id', String(chatId));
   form.append('caption', caption.slice(0, 900));
+  if (threadId || logThreadId) form.append('message_thread_id', String(threadId || logThreadId));
   const bytes = fs.readFileSync(file);
   form.append('document', new Blob([bytes]), path.basename(file));
   const response = await fetch('https://api.telegram.org/bot' + LOG_BOT_TOKEN + '/sendDocument', { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
@@ -172,25 +176,26 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   if (!isOwnerTelegram(message?.from?.id)) return;
   const text = String(message.text || '').trim();
   const chatId = message.chat?.id;
+  const threadId = Number(message.message_thread_id || logThreadId || 0) || undefined;
   if (!chatId || !LOG_CHAT_ID || String(chatId) !== LOG_CHAT_ID) return;
   if (text.startsWith('/logs')) {
     const replyId = message.reply_to_message?.message_id;
-    if (!replyId) { await telegram('sendMessage', { chat_id: chatId, text: 'Reply to an action start/end message with /logs to receive its .txt log.' }); return; }
+    if (!replyId) { await telegram('sendMessage', { chat_id: chatId, text: 'Reply to an action start/end message with /logs to receive its .txt log.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const item = safeJson(messageIndexFile(root), {})[String(replyId)];
-    if (!item?.action_id) { await telegram('sendMessage', { chat_id: chatId, text: 'No action log is indexed for that message. Only monitoring action messages are supported.' }); return; }
+    if (!item?.action_id) { await telegram('sendMessage', { chat_id: chatId, text: 'No action log is indexed for that message. Only monitoring action messages are supported.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const file = path.join(root, 'data', 'owner-monitoring', 'actions', path.basename(item.action_id) + '.txt');
-    await sendDocument(chatId, file, 'Action log: ' + item.action_id + ' (' + item.phase + ' message)');
+    await sendDocument(chatId, file, 'Action log: ' + item.action_id + ' (' + item.phase + ' message)', threadId);
     return;
   }
   if (text.startsWith('/userinfo')) {
     const requested = text.split(/\s+/)[1] || '';
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === requested.toLowerCase() || x.toLowerCase() === requested.toLowerCase());
-    if (!id) { await telegram('sendMessage', { chat_id: chatId, text: 'Browser ID not found. Use /workspaces to list known browsers.' }); return; }
+    if (!id) { await telegram('sendMessage', { chat_id: chatId, text: 'Browser ID not found. Use /workspaces to list known browsers.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const data = loadWorkspaceSummary(root, id);
     const report = JSON.stringify(data, null, 2);
     const file = path.join(root, 'data', 'owner-monitoring', 'exports', data.browser_id + '-userinfo.txt');
     fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, report);
-    await sendDocument(chatId, file, 'Workspace details for ' + data.browser_id + '. Secrets are masked.');
+    await sendDocument(chatId, file, 'Workspace details for ' + data.browser_id + '. Secrets are masked.', threadId);
     return;
   }
   if (text.startsWith('/botinfos')) {
@@ -203,20 +208,36 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
     const file = path.join(root, 'data', 'owner-monitoring', 'exports', 'botinfos.txt');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, ['BROWSER TELEGRAM CONFIGURATIONS', 'Generated: ' + new Date().toISOString(), '', ...(rows.length ? rows : ['No browser workspaces found.']), '', 'Raw bot tokens and API hashes are never exported.'].join('\n'));
-    await sendDocument(chatId, file, 'Telegram configuration inventory. Credentials are masked.');
+    await sendDocument(chatId, file, 'Telegram configuration inventory. Credentials are masked.', threadId);
     return;
   }
   if (text.startsWith('/workspaces')) {
     const rows = options.getWorkspaceIds().map(id => loadWorkspaceSummary(root, id));
     const summary = rows.map(x => x.browser_id + ' — ' + x.status + ' — crawls ' + x.activity.crawl_count + ' — jobs ' + x.activity.download_jobs).join('\n') || 'No browser workspaces yet.';
-    await telegram('sendMessage', { chat_id: chatId, text: summary.slice(0, 3900) });
+    await telegram('sendMessage', { chat_id: chatId, text: summary.slice(0, 3900), ...(threadId ? { message_thread_id: threadId } : {}) });
     return;
   }
   if (text.startsWith('/help')) {
-    await telegram('sendMessage', { chat_id: chatId, text: '/workspaces — list browser workspaces\n/userinfo <browserid> — detailed workspace report\n/botinfos — Telegram configuration inventory\nReply to an action message with /logs — get its .txt log' });
+    await telegram('sendMessage', { chat_id: chatId, text: '/workspaces — list browser workspaces\n/userinfo <browserid> — detailed workspace report\n/botinfos — Telegram configuration inventory\nReply to an action message with /logs — get its .txt log', ...(threadId ? { message_thread_id: threadId } : {}) });
+  }
+}
+async function ensureLogForumTopic(root: string) {
+  if (logThreadId || !LOG_BOT_TOKEN || !LOG_CHAT_ID) return;
+  const stored = safeJson(path.join(root, 'data', 'owner-monitoring', 'log-topic.json'), {});
+  if (Number(stored.message_thread_id) > 0) { logThreadId = Number(stored.message_thread_id); return; }
+  try {
+    const topic: any = await telegram('createForumTopic', { chat_id: LOG_CHAT_ID, name: 'Vortex Operational Logs', icon_color: 7322096 });
+    if (topic?.message_thread_id) {
+      logThreadId = Number(topic.message_thread_id);
+      atomicJson(path.join(root, 'data', 'owner-monitoring', 'log-topic.json'), { message_thread_id: logThreadId, created_at: Date.now(), name: 'Vortex Operational Logs' });
+      await telegram('sendMessage', { chat_id: LOG_CHAT_ID, message_thread_id: logThreadId, text: 'Vortex operational monitoring is connected. Server, browser, queue, crawl, download and Telegram events will appear in this topic.' });
+    }
+  } catch (error: any) {
+    console.warn('[Owner monitoring] Could not create a forum topic; posting to the main log group instead:', error.message);
   }
 }
 export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
+  void ensureLogForumTopic(options.rootDir);
   app.post('/api/workspace/name', (req: Request, res: Response) => {
     const id = String((req as any).workspaceId || '');
     const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 50) : '';
