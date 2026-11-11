@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Send,
   CheckCircle2,
@@ -33,6 +33,13 @@ export const TelegramHub: React.FC<TelegramHubProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [testResult, setTestResult] = useState<any | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [defaultBot, setDefaultBot] = useState<{ username: string | null; configured: boolean } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/telegram/default-bot').then((response) => response.json()).then((data) => {
+      if (data?.success) setDefaultBot({ username: data.username || null, configured: Boolean(data.configured) });
+    }).catch(() => {});
+  }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,6 +84,11 @@ export const TelegramHub: React.FC<TelegramHubProps> = ({
             Configure automated alerts, inspection test reports, and queue-based video uploads.
           </p>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-300">
+        <div className="font-semibold text-slate-100">Platform default bot</div>
+        {defaultBot?.username ? <p className="mt-1">Public bot: <a className="text-lime-300 underline" href={'https://t.me/' + defaultBot.username} target="_blank" rel="noreferrer">@{defaultBot.username}</a>. This bot is used for platform operational logs and configured fallback delivery.</p> : <p className="mt-1">{defaultBot?.configured ? 'Default bot is configured; its public username could not be loaded.' : 'Platform default bot is not configured yet.'}</p>}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

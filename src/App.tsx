@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Header } from './components/Header';
+import { OwnerDashboard } from './components/OwnerDashboard';
 import { VideoPlayerModal } from './components/VideoPlayerModal';
 const ScraperConsole = lazy(() => import('./components/ScraperConsole').then((m) => ({ default: m.ScraperConsole })));
 const QueueManager = lazy(() => import('./components/QueueManager').then((m) => ({ default: m.QueueManager })));
@@ -46,7 +47,8 @@ function restoreCrawlResult(data: any): { videos: ScrapedVideo[]; report: Inspec
   };
 }
 
-export default function App() {
+function WorkspaceApp() {
+  const [browserId, setBrowserId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'console' | 'queue' | 'files' | 'telegram' | 'logs'>('console');
   const [urlsInput, setUrlsInput] = useState<string>('https://en.wikipedia.org/wiki/Big_Buck_Bunny');
   const [isTesting, setIsTesting] = useState<boolean>(false);
@@ -194,6 +196,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch('/api/workspace/info').then((r) => r.json()).then((data) => { if (data.success) setBrowserId(data.browser_id || ''); }).catch(() => {});
     fetchSettings();
     fetchJobs();
     fetchNonstopStatus();
@@ -700,6 +703,7 @@ export default function App() {
         activeDownloadsCount={activeDownloadsCount}
         onPrimaryAction={primaryActionFn}
         primaryActionLabel={primaryActionLabel}
+        browserId={browserId}
       />
 
       {/* Main Workspace Viewport */}
@@ -801,4 +805,9 @@ export default function App() {
       />
     </div>
   );
+}
+
+export default function App() {
+  if (window.location.pathname.replace(/\\/$/, '') === '/owner') return <OwnerDashboard />;
+  return <WorkspaceApp />;
 }

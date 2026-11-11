@@ -6,7 +6,7 @@ import { spawn } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dotenv from 'dotenv';
-import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite } from './owner-monitoring.js';
+import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite, browserIdForWorkspace } from './owner-monitoring.js';
 
 dotenv.config();
 

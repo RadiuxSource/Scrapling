@@ -29,7 +29,8 @@ function atomicJson(file: string, value: any) {
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
   fs.renameSync(tmp, file);
 }
-function browserLabel(workspaceId: string) { return 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(); }
+export function browserIdForWorkspace(workspaceId: string) { return 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(); }
+function browserLabel(workspaceId: string) { return browserIdForWorkspace(workspaceId); }
 function workspaceRoot(root: string, id: string) { return path.join(root, 'data', 'workspaces', id); }
 function metaFile(root: string, id: string) { return path.join(workspaceRoot(root, id), 'workspace.json'); }
 function mask(value: string) { if (!value) return null; return value.length <= 8 ? '••••' : value.slice(0, 4) + '••••' + value.slice(-4); }
@@ -209,6 +210,11 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   }
 }
 export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
+  app.get('/api/workspace/info', (req: Request, res: Response) => {
+    const id = String((req as any).workspaceId || '');
+    const metadata = id ? safeJson(metaFile(options.rootDir, id), {}) : {};
+    res.json({ success: true, browser_id: id ? browserLabel(id) : null, name: metadata.name || null });
+  });
   app.get('/api/telegram/default-bot', async (_req: Request, res: Response) => {
     if (!LOG_BOT_TOKEN) return res.json({ success: true, configured: false, username: null });
     try {

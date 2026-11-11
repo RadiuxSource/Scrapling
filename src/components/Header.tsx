@@ -16,6 +16,7 @@ interface HeaderProps {
   activeDownloadsCount: number;
   onPrimaryAction: () => void | Promise<any>;
   primaryActionLabel: string;
+  browserId?: string;
 }
 
 const navigation: { id: WorkspaceTab; label: string; icon: React.ElementType }[] = [
@@ -32,6 +33,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeDownloadsCount,
   onPrimaryAction,
   primaryActionLabel,
+  browserId,
 }) => (
   <header className="vortex-header">
     <div className="vortex-header-inner">
@@ -67,7 +69,7 @@ export const Header: React.FC<HeaderProps> = ({
 
       <div className="vortex-header-actions">
         <div className="vortex-workspace-label">
-          <span>BROWSER WORKSPACE</span>
+          <span>{browserId || 'BROWSER WORKSPACE'}</span>
         </div>
         <button type="button" onClick={onPrimaryAction} className="vortex-primary-action">
           <span>{primaryActionLabel}</span>
