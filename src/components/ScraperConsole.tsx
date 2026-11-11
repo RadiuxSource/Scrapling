@@ -47,6 +47,8 @@ interface ScraperConsoleProps {
   onClearResults?: () => void;
   onLoadNextBatch?: () => void;
   onCrawlAllSubpages?: () => void;
+  crawlRecovery?: { task_id: string; status: 'running' | 'completed' | 'failed'; error?: string; request?: { urls: string[]; deep_crawl: boolean; max_subpages: number; subpage_offset: number }; result?: any } | null;
+  onResumeCrawl?: () => void;
 }
 
 const SAMPLE_URLS = [
@@ -92,6 +94,8 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   onClearResults,
   onLoadNextBatch,
   onCrawlAllSubpages,
+  crawlRecovery,
+  onResumeCrawl,
 }) => {
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -159,6 +163,39 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
 
   return (
     <div className="vortex-view vortex-view-console space-y-6">
+      {crawlRecovery && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3" role="status">
+          <div className="flex items-start gap-3 min-w-0">
+            {crawlRecovery.status === 'running' ? (
+              <div className="w-2.5 h-2.5 mt-1 rounded-full bg-[var(--accent)] animate-pulse shrink-0" />
+            ) : crawlRecovery.status === 'completed' ? (
+              <CheckCircle2 className="w-4 h-4 mt-0.5 text-[var(--success)] shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 mt-0.5 text-[var(--warning)] shrink-0" />
+            )}
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-[var(--text)]">
+                {crawlRecovery.status === 'running' ? 'Reconnected to your active crawl'
+                  : crawlRecovery.status === 'completed' ? `Previous crawl restored · ${videos.length} video(s)`
+                  : 'Previous crawl was interrupted'}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-0.5 truncate">
+                {crawlRecovery.status === 'failed' ? (crawlRecovery.error || 'The crawl did not finish. You can safely start it again.') : 'This crawl belongs to the current browser workspace.'}
+              </p>
+            </div>
+          </div>
+          {crawlRecovery.status === 'failed' && crawlRecovery.request?.urls?.length > 0 && (
+            <button
+              type="button"
+              onClick={onResumeCrawl}
+              disabled={isScraping}
+              className="px-3.5 py-2 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)] text-xs font-semibold hover:bg-[var(--accent)]/15 disabled:opacity-40 whitespace-nowrap"
+            >
+              Resume crawl
+            </button>
+          )}
+        </div>
+      )}
       {queueRestore?.status === 'restoring' && (
         <div className="rounded-lg border border-cyan-500/40 bg-cyan-950/30 px-4 py-3 flex items-center gap-3" role="status">
           <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
