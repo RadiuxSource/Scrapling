@@ -15,7 +15,6 @@ const ROOT_DIR = process.cwd();
 const DOWNLOADS_DIR = path.join(ROOT_DIR, 'downloads');
 const REPORTS_DIR = path.join(ROOT_DIR, 'reports');
 const LOGS_DIR = path.join(ROOT_DIR, 'logs');
-const SETTINGS_FILE = path.join(ROOT_DIR, 'settings.json');
 
 // Ensure directories exist
 [DOWNLOADS_DIR, REPORTS_DIR, LOGS_DIR].forEach((dir) => {
