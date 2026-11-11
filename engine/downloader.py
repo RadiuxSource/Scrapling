@@ -271,6 +271,7 @@ class VideoDownloader:
         ]
 
         for p_idx, h in enumerate(header_profiles, 1):
+            profile_started_at = time.time()
             try:
                 logger.info(f"[Tier 1] Trying header profile {p_idx} for direct stream...")
                 with requests.get(
@@ -288,18 +289,23 @@ class VideoDownloader:
                             )
                             continue
                         total_bytes = int(r.headers.get("content-length", 0))
+                        if not total_bytes:
+                            content_range = r.headers.get("content-range", "")
+                            match = re.search(r"/(\d+)$", content_range)
+                            if match:
+                                total_bytes = int(match.group(1))
                         downloaded = 0
 
                         with open(temp_download_path, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            for chunk in r.iter_content(chunk_size=256 * 1024):
                                 if chunk:
                                     f.write(chunk)
                                     downloaded += len(chunk)
 
-                                    elapsed = max(0.1, time.time() - start_time)
+                                    elapsed = max(0.1, time.time() - profile_started_at)
                                     speed_mb = round((downloaded / (1024 * 1024)) / elapsed, 2)
-                                    pct = round((downloaded / total_bytes) * 90.0, 1) if total_bytes > 0 else 50.0
-                                    eta = int((total_bytes - downloaded) / (downloaded / elapsed)) if total_bytes > downloaded else 0
+                                    pct = round((downloaded / total_bytes) * 90.0, 1) if total_bytes > 0 else 5.0
+                                    eta = int((total_bytes - downloaded) / (downloaded / elapsed)) if total_bytes > downloaded and downloaded > 0 else 0
 
                                     report_progress({
                                         "status": "downloading",

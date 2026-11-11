@@ -506,3 +506,10 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Improved downloader diagnostics and transient curl retries. FFmpeg rejection details are now logged, and failed direct-stream attempts remove partial temporary files instead of leaving misleading artifacts.
 - Added optional `YTDLP_COOKIES_FILE` support for a securely mounted cookie file when a source requires the operator's authorized session. Cookie contents must never be committed or pasted into logs.
 - The normal extraction path and direct-media-first behavior remain unchanged. This improves compatibility; it cannot guarantee access to DRM-protected, private, paid, geo-restricted, or otherwise access-controlled media.
+
+
+### 11/11 — Live download progress and Telegram command recovery
+- Fixed the dashboard progress gap: the Python downloader already wrote atomic live job updates, but the Node API kept returning its stale in-memory job until the runner exited. The server now mirrors the active runner's job checkpoint into the workspace job state while it runs, so percentage, transfer speed, ETA, and downloaded bytes update during the transfer.
+- Direct-stream progress now refreshes in smaller 256 KiB increments, uses the active request's elapsed time for speed calculations, and reads the total size from `Content-Range` when `Content-Length` is absent. This improves progress accuracy without changing the direct-media-first extraction or download selection path.
+- Telegram command polling now removes a configured webhook only from the explicitly dedicated `LOG_TELEGRAM_BOT_TOKEN`, preserving pending updates, then starts long polling. It never deletes a webhook from the shared fallback `TELEGRAM_BOT_TOKEN`; in that case the log explains that a dedicated monitoring token is required.
+- Queue recovery remains fail-safe: recovered downloads resume only after Supabase confirms the latest in-flight checkpoint. If the backup is unavailable, the existing automatic retry remains in place rather than risking queue loss on another restart.

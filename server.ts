@@ -430,6 +430,27 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0, actionLogI
       },
     });
 
+    const workspaceId = getWorkspaceId();
+    const progressJobId = typeof payload?.job_id === 'string' ? payload.job_id : '';
+    const progressFile = progressJobId
+      ? path.join(workspaceStoragePaths(workspaceId).logs, 'jobs', progressJobId + '.json')
+      : '';
+    // Mirror the Python runner's atomic progress checkpoint into the in-memory
+    // job returned by /api/jobs while the transfer is still active.
+    const progressSyncTimer = progressFile ? setInterval(() => {
+      try {
+        if (!fs.existsSync(progressFile)) return;
+        const savedProgress = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
+        const trackedJob = workspaceJobs.get(workspaceId)?.get(progressJobId);
+        if (trackedJob && savedProgress?.job_id === progressJobId) {
+          Object.assign(trackedJob, savedProgress);
+        }
+      } catch {
+        // Ignore transient reads while the Python runner replaces its JSON file.
+      }
+    }, 400) : undefined;
+    progressSyncTimer?.unref?.();
+
     const runId = `${action}_${Date.now()}_${Math.random()}`;
     const entry: ActiveProcessEntry = {
       id: runId,
@@ -469,6 +490,7 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0, actionLogI
     });
 
     proc.on('close', (code, signal) => {
+      if (progressSyncTimer) clearInterval(progressSyncTimer);
       activeProcesses.delete(runId);
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (timedOut) {

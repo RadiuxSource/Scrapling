@@ -439,10 +439,18 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
       try {
         const webhook: any = await telegram('getWebhookInfo', {});
         if (webhook?.url) {
-          const warning = 'Owner commands are not polling because this bot currently has a webhook configured. Use a dedicated LOG_TELEGRAM_BOT_TOKEN with no webhook, or remove the webhook for this bot before using /logs, /userinfo and /botinfos.';
-          console.warn('[Owner monitoring] ' + warning);
-          if (LOG_CHAT_ID) await telegram('sendMessage', { chat_id: LOG_CHAT_ID, text: warning });
-          return;
+          // The dedicated monitoring bot is reserved for long polling.
+          // Preserve pending updates and never alter a shared fallback bot.
+          const dedicatedLogBot = Boolean((process.env.LOG_TELEGRAM_BOT_TOKEN || '').trim());
+          if (dedicatedLogBot) {
+            await telegram('deleteWebhook', { drop_pending_updates: false });
+            console.warn('[Owner monitoring] Removed webhook from dedicated log bot; long polling will start.');
+          } else {
+            const warning = 'Owner commands are paused because the fallback TELEGRAM_BOT_TOKEN has a webhook configured. Set a dedicated LOG_TELEGRAM_BOT_TOKEN for Vortex commands, or remove the webhook from the fallback bot yourself. Vortex will not change a shared bot webhook.';
+            console.warn('[Owner monitoring] ' + warning);
+            if (LOG_CHAT_ID) await telegram('sendMessage', { chat_id: LOG_CHAT_ID, text: warning });
+            return;
+          }
         }
       } catch (error: any) {
         console.warn('[Owner monitoring] Could not inspect Telegram webhook state:', error.message);
