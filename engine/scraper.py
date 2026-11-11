@@ -1363,8 +1363,14 @@ class MediaInspector:
         cookie_file = os.environ.get("YTDLP_COOKIES_FILE")
         if cookie_file and Path(cookie_file).is_file():
             ydl_options["cookiefile"] = cookie_file
+        # Prefer the Node 22 runtime already supplied by the node:22 image.
+        # This avoids repeatedly spawning the Deno binary that was SIGKILLed
+        # in the constrained deployment environment. Keep Deno as local fallback.
+        node_path = shutil.which("node")
         deno_path = shutil.which("deno")
-        if deno_path:
+        if node_path:
+            ydl_options["js_runtimes"] = {"node": {"path": node_path}}
+        elif deno_path:
             ydl_options["js_runtimes"] = {"deno": {"path": deno_path}}
 
         results = []
@@ -1511,6 +1517,15 @@ class MediaInspector:
                     f" using {player_client}" if player_client else "",
                     exc,
                 )
+                # Alternate public player clients do not fix an explicit
+                # YouTube bot-verification gate; stop instead of repeating
+                # expensive challenge requests for the same blocked session.
+                if is_youtube and "sign in to confirm" in str(exc).lower():
+                    logger.warning(
+                        "YouTube requires an authorized session for this request; "
+                        "stopping public-client retries."
+                    )
+                    break
 
         if not results and last_error:
             logger.warning("YouTube/video metadata probe exhausted its attempts: %s", last_error)

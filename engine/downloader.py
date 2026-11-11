@@ -499,8 +499,13 @@ class VideoDownloader:
             "remote_components": ["ejs:github"],
             "logger": YtDlpDownloaderLogger()
         }
+        # Prefer the Node 22 runtime already supplied by the node:22 image.
+        # Keep Deno as a fallback for local environments without Node.
+        node_path = shutil.which("node")
         deno_path = shutil.which("deno")
-        if deno_path:
+        if node_path:
+            ydl_opts["js_runtimes"] = {"node": {"path": node_path}}
+        elif deno_path:
             ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
         # Optional authorized session support. Public extraction remains available
@@ -569,6 +574,14 @@ class VideoDownloader:
                     f" using {player_client}" if player_client else "",
                     exc,
                 )
+                # A bot-verification gate is session-related, not a player
+                # client mismatch. Avoid repeating the same blocked request.
+                if is_youtube and "sign in to confirm" in str(exc).lower():
+                    logger.warning(
+                        "YouTube requires an authorized session for this download; "
+                        "stopping public-client retries."
+                    )
+                    break
 
             # Remove only incomplete fragments before trying another client.
             # Never remove a completed output produced by an earlier attempt.
