@@ -273,6 +273,7 @@ The Express server exposes the application API, including:
 | `POST /api/test-website` | Inspect a website and return a test report |
 | `POST /api/scrape` | Start a background crawl task |
 | `GET /api/scrape/status/:id` | Poll a crawl task |
+| `GET /api/scrape/tasks` | Restore the latest crawl for the current browser workspace |
 | `POST /api/download` | Start an individual download |
 | `POST /api/download-all-nonstop` | Add videos to the nonstop queue |
 | `GET /api/nonstop-queue/status` | Read nonstop queue status |
@@ -325,6 +326,13 @@ The API is intended to be used by the Vortex frontend. Data-bearing API routes u
 - Review the Logs section for the underlying Telegram response.
 
 ## Fix log
+
+### 11/11 — Browser-specific crawler recovery
+- Persisted each crawl's original URLs and crawl settings alongside its workspace-private task record.
+- Added `GET /api/scrape/tasks` to restore the latest crawl for the signed browser workspace only; the endpoint returns only the latest task to avoid sending unnecessary historical result payloads.
+- On a tab reload, the Scraper Console restores completed crawl results and the original target URLs. If the crawl is still running on the server, the page reconnects to its existing task and waits for the result instead of starting a duplicate crawl.
+- If the server restarted mid-crawl, the task is marked interrupted and the console offers **Resume crawl**, which restarts that crawl using its saved URLs and settings. A mid-crawl Python process cannot be continued from its exact in-memory position; resume safely reruns the saved crawl request from its beginning.
+- Crawl task history and recovery remain isolated by browser workspace. The video extraction implementation and nonstop download queue recovery were not changed.
 
 ### 11/11 — Privacy isolation (incremental rollout)
 - **Phase 1 implemented:** added a signed, anonymous browser workspace cookie and separated the in-memory Logs feed by workspace. No login or registration is required.
