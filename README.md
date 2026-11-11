@@ -324,6 +324,17 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 ## Fix log
 
+### 11/11 — Per-browser workspace isolation
+- Added signed, persistent browser workspace identity so each browser session can keep its own jobs, crawl state, queue, logs, downloads, settings, and Telegram configuration separate.
+- Workspace files are stored under `data/workspaces/`; keep `WORKSPACE_SECRET` stable across deployments so existing workspace cookies remain valid.
+- Added environment-based `WORKSPACE_SECRET` and one-time `WORKSPACE_MIGRATION_TOKEN` configuration. Do not commit either secret; configure them in the deployment environment.
+- Added a protected legacy-workspace claim flow to migrate the existing single-workspace data into the owner's workspace without deleting the original legacy files.
+- Queue snapshots use workspace-specific Supabase row IDs. Apply the updated `supabase-queue-schema.sql` before enabling multi-workspace queue persistence.
+- Per-workspace Python runner paths are supplied through environment variables so crawler extraction modules retain their existing behavior.
+- Deployment note: Supabase stores queue metadata, not downloaded media. Use persistent storage for files that must survive instance replacement; an interrupted active item is requeued, not guaranteed to resume from an exact byte offset.
+- This feature needs deployment-level verification with multiple browsers and a real Koyeb restart before it can be called production-verified.
+
+
 ### 11/11 — Queue restore timeout and notification visibility
 - Added a 12-second timeout to the Supabase queue restore request so a stalled network request cannot leave the recovery indicator spinning indefinitely.
 - Kept restore status available to the dashboard for up to 45 seconds after success or cancellation, instead of clearing it on the first status poll.
