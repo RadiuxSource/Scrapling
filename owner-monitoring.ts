@@ -361,13 +361,20 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     const metadata = id ? safeJson(metaFile(options.rootDir, id), {}) : {};
     res.json({ success: true, browser_id: id ? browserLabel(id) : null, name: metadata.name || null });
   });
-  app.get('/api/telegram/default-bot', async (_req: Request, res: Response) => {
-    if (!LOG_BOT_TOKEN) return res.json({ success: true, configured: false, username: null });
+  app.get('/api/telegram/default-bot', async (req: Request, res: Response) => {
+    const workspaceId = String((req as any).workspaceId || '');
+    const settings = workspaceId ? safeJson(path.join(workspaceRoot(options.rootDir, workspaceId), 'settings.json'), {}) : {};
+    // Resolve the bot that actually delivers media to channels, not the
+    // separate LOG_TELEGRAM_BOT_TOKEN used for private operational messages.
+    const token = String(settings.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (!token) return res.json({ success: true, configured: false, username: null, source: 'none' });
     try {
-      const me = await telegram('getMe', {});
-      res.json({ success: true, configured: true, username: me?.username || null, display_name: me?.first_name || null });
+      const response = await fetch('https://api.telegram.org/bot' + token + '/getMe', { signal: AbortSignal.timeout(10000) });
+      const data: any = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.description || 'Telegram identity lookup failed');
+      res.json({ success: true, configured: true, username: data.result?.username || null, display_name: data.result?.first_name || null, source: settings.telegram_bot_token ? 'workspace' : 'platform' });
     } catch {
-      res.json({ success: true, configured: true, username: null, error: 'Default bot is configured but Telegram identity lookup failed.' });
+      res.json({ success: true, configured: true, username: null, error: 'Video delivery bot is configured but Telegram identity lookup failed.' });
     }
   });
   app.post('/api/owner/login', (req: Request, res: Response) => {

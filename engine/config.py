@@ -65,7 +65,8 @@ def resolve_telegram_delivery(settings=None, bot_token=None, chat_id=None):
     settings = settings or load_settings()
     custom_bot = str(bot_token or settings.get("telegram_bot_token") or "").strip()
     custom_chat = str(chat_id or settings.get("telegram_chat_id") or "").strip()
-    default_bot = str(os.getenv("LOG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    # Media delivery uses the main platform bot, never the dedicated logs bot.
+    default_bot = str(os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     default_chat = str(os.getenv("LOG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
     if custom_bot and custom_chat:

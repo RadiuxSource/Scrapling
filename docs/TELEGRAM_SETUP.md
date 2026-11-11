@@ -1,6 +1,6 @@
 # Telegram setup and fallback guide
 
-Vortex supports a personal Telegram bot/channel configuration per browser workspace, plus deployment-level defaults for the platform's shared log/backup destination.
+Vortex supports a personal Telegram bot/channel configuration per browser workspace, plus deployment-level default video-delivery bot and a separate operational log/backup destination.
 
 ## Configure your own bot and channel
 
@@ -51,9 +51,10 @@ The deployment operator configures these server-side environment variables:
 - `OWNER_ACCESS_SECRET`: long random secret for the protected owner dashboard API. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"` and store it only in Koyeb Secrets.
 - `OWNER_TELEGRAM_USER_ID`: numeric Telegram user ID allowed to use owner commands. Get this number by messaging `@userinfobot` from your own Telegram account; use the numeric ID, not your username.
 - `LOG_TELEGRAM_CHAT_ID`: private log group/channel destination. This is the default destination when a browser does not provide a complete custom bot/channel pair.
-- `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. If omitted, `TELEGRAM_BOT_TOKEN` is used as the default bot.
+- `TELEGRAM_BOT_TOKEN`: platform's main video-delivery bot. This is the bot displayed in Telegram Hub as the channel-upload bot and the bot users add to their media channels when using fallback delivery.
+- `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. It is used only for private operational logs and owner commands; it is not the channel video-delivery bot.
 
-Add the default monitoring bot to the log group as an administrator with permission to send messages and documents. Owner commands use Telegram long polling, so the monitoring bot must not have a webhook configured. A dedicated `LOG_TELEGRAM_BOT_TOKEN` is recommended to avoid interfering with another bot integration. If `LOG_TELEGRAM_BOT_TOKEN` is blank, the bot created for `TELEGRAM_BOT_TOKEN` is the default bot. `LOG_TELEGRAM_CHAT_ID` is required; the deprecated `TELEGRAM_CHAT_ID` is not used for owner monitoring. For invite-link creation in a destination channel, the resolved bot must also have permission to invite users. The public endpoint `/api/telegram/default-bot` exposes only the configured bot's public username, never its token.
+Add the dedicated monitoring bot to the log group as an administrator with permission to send messages and documents. Separately, add the main video-delivery bot (`TELEGRAM_BOT_TOKEN`) to media channels when using fallback delivery. Owner commands use Telegram long polling, so the monitoring bot must not have a webhook configured. A dedicated `LOG_TELEGRAM_BOT_TOKEN` is recommended to avoid interfering with another bot integration. If `LOG_TELEGRAM_BOT_TOKEN` is blank, owner monitoring falls back to `TELEGRAM_BOT_TOKEN`; this fallback is for logs only and does not change which bot is used for media delivery. `LOG_TELEGRAM_CHAT_ID` is required; the deprecated `TELEGRAM_CHAT_ID` is not used for owner monitoring. For invite-link creation in a destination channel, the resolved bot must also have permission to invite users. The public endpoint `/api/telegram/default-bot` exposes only the configured bot's public username, never its token.
 
 Owner commands (only the configured numeric owner ID is authorized):
 
@@ -74,12 +75,12 @@ The log group is operational-only. User media uploads continue to use the config
 
 You do not need a separate group if you already have a Telegram supergroup with Topics enabled. Add the default monitoring bot as an administrator with permission to manage topics. If `LOG_TELEGRAM_THREAD_ID` is blank, Vortex attempts to create a **Vortex Operational Logs** topic automatically using the Bot API. If topic creation is unavailable, it falls back to posting in the main group. You can instead set `LOG_TELEGRAM_THREAD_ID` to an existing topic ID.
 
-The default bot username is displayed publicly in the Telegram Hub and can also be read from `/api/telegram/default-bot`. The Bot API cannot create a brand-new group or supergroup. A human group owner must create that group and add the bot; Vortex can then create a topic inside it when the required permissions are granted.
+The video-delivery bot username (workspace bot if configured, otherwise `TELEGRAM_BOT_TOKEN`) is displayed in the Telegram Hub and can also be read from `/api/telegram/default-bot`. The dedicated log bot username is never presented as the channel-upload bot. The Bot API cannot create a brand-new group or supergroup. A human group owner must create that group and add the bot; Vortex can then create a topic inside it when the required permissions are granted.
 
 ## Koyeb setup checklist
 
 1. In Telegram, create a private supergroup yourself and add the monitoring bot. Promote it to administrator with permission to send messages and documents. Enable Topics and grant Manage Topics if you want Vortex to create its own log topic.
-2. Create a dedicated monitoring bot with `@BotFather`. Do not configure a webhook for it. Copy its token into Koyeb as `LOG_TELEGRAM_BOT_TOKEN`.
+2. Set `TELEGRAM_BOT_TOKEN` to the main video-delivery bot token that users will add to their channels. Separately, create a dedicated monitoring bot with `@BotFather`; do not configure a webhook for it, and copy its token into Koyeb as `LOG_TELEGRAM_BOT_TOKEN`.
 3. Obtain the supergroup's numeric chat ID (commonly a negative ID beginning with `-100`) using a Telegram chat-ID utility such as `@RawDataBot`, then remove the utility bot if you do not want it in the group.
 4. In Koyeb, open the service's **Settings → Environment variables** and add:
    - `OWNER_ACCESS_SECRET` — generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
@@ -90,4 +91,4 @@ The default bot username is displayed publicly in the Telegram Hub and can also 
 5. Keep your existing `WORKSPACE_SECRET`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` unchanged. Also run the latest `supabase-queue-schema.sql` in Supabase SQL Editor; its migration removes legacy CHECK constraints attached to the queue table's `id` column, including renamed constraints that reject `ws_<uuid>` workspace IDs. Do not put any of these secrets in the browser UI or commit them to Git.
 6. Redeploy the service. Open `https://YOUR-DOMAIN/owner` and sign in with `OWNER_ACCESS_SECRET`. In the log group, use `/start` to verify bot connectivity and uptime, `/help` for commands, then reply to an action message with `/logs`.
 
-If you omit `LOG_TELEGRAM_BOT_TOKEN`, Vortex falls back to the deployment's `TELEGRAM_BOT_TOKEN`. This fallback bot must also have no webhook configured for owner commands to work. A dedicated log bot is safer because long polling can conflict with an existing webhook integration.
+If you omit `LOG_TELEGRAM_BOT_TOKEN`, owner monitoring falls back to `TELEGRAM_BOT_TOKEN`; that main bot must then have no webhook configured for owner commands to work. A dedicated log bot is safer because long polling can conflict with an existing webhook integration.

@@ -87,8 +87,8 @@ export const TelegramHub: React.FC<TelegramHubProps> = ({
       </div>
 
       <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-300">
-        <div className="font-semibold text-slate-100">Platform default bot</div>
-        {defaultBot?.username ? <p className="mt-1">Public bot: <a className="text-lime-300 underline" href={'https://t.me/' + defaultBot.username} target="_blank" rel="noreferrer">@{defaultBot.username}</a>. This bot is used for platform operational logs and configured fallback delivery.</p> : <p className="mt-1">{defaultBot?.configured ? 'Default bot is configured; its public username could not be loaded.' : 'Platform default bot is not configured yet.'}</p>}
+        <div className="font-semibold text-slate-100">Video delivery bot</div>
+        {defaultBot?.username ? <p className="mt-1">Channel upload bot: <a className="text-lime-300 underline" href={'https://t.me/' + defaultBot.username} target="_blank" rel="noreferrer">@{defaultBot.username}</a>. This is the bot to add as an administrator to a channel when using the platform fallback. Operational log messages use a separate monitoring bot.</p> : <p className="mt-1">{defaultBot?.configured ? 'Video delivery bot is configured; its public username could not be loaded.' : 'No platform video delivery bot is configured. Add your own bot token above, or configure TELEGRAM_BOT_TOKEN on the server.'}</p>}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
