@@ -6,6 +6,7 @@ import time
 import urllib.parse
 import requests
 import subprocess
+import shutil
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable
