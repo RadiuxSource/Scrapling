@@ -545,7 +545,7 @@ class VideoDownloader:
                     "youtube": (
                         {"player_client": [player_client]} if player_client else {}
                     ),
-                    "youtubepot-bgutilscript": {"server_home": [pot_home]},
+                    "youtube-bgutilscript": {"server_home": [pot_home]},
                 }
             if player_client:
                 logger.warning(
