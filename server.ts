@@ -252,7 +252,7 @@ function addLog(level: 'info' | 'warn' | 'error', message: string) {
   if (/^[0-9a-f-]{36}$/i.test(workspaceId)) {
     try {
       const logFile = path.join(workspaceStoragePaths(workspaceId).logs, 'engine.jsonl');
-      fs.appendFileSync(logFile, JSON.stringify(entry) + '\\n');
+      fs.appendFileSync(logFile, JSON.stringify(entry) + '\n');
       const stats = fs.statSync(logFile);
       if (stats.size > 2 * 1024 * 1024) {
         const tail = fs.readFileSync(logFile, 'utf8').slice(-1024 * 1024);
