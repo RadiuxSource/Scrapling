@@ -75,6 +75,49 @@ function getWorkspaceJobs(): Map<string, JobStatus> {
   return jobs;
 }
 
+const VALID_JOB_STATUSES = new Set<JobStatus['status']>([
+  'queued', 'starting', 'downloading', 'processing_ffmpeg',
+  'uploading_telegram', 'completed', 'failed',
+]);
+
+function persistWorkspaceJob(job: JobStatus, workspaceId = getWorkspaceId()): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(job.job_id)) throw new Error('Invalid job identifier');
+  const jobsDir = path.join(workspaceStoragePaths(workspaceId).logs, 'jobs');
+  fs.mkdirSync(jobsDir, { recursive: true });
+  const target = path.join(jobsDir, `${job.job_id}.json`);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(job));
+  fs.renameSync(temporary, target);
+}
+
+function restoreWorkspaceJobs(workspaceId = getWorkspaceId()): void {
+  const jobs = getWorkspaceJobs();
+  const jobsDir = path.join(workspaceStoragePaths(workspaceId).logs, 'jobs');
+  if (!fs.existsSync(jobsDir)) return;
+
+  for (const fileName of fs.readdirSync(jobsDir).filter((name) => name.endsWith('.json'))) {
+    try {
+      const fileJobId = fileName.slice(0, -5);
+      if (!/^[a-zA-Z0-9_-]+$/.test(fileJobId) || jobs.has(fileJobId)) continue;
+      const saved = JSON.parse(fs.readFileSync(path.join(jobsDir, fileName), 'utf-8'));
+      if (!saved || saved.job_id !== fileJobId || !VALID_JOB_STATUSES.has(saved.status) ||
+          typeof saved.title !== 'string' || typeof saved.media_url !== 'string' ||
+          typeof saved.started_at !== 'number') continue;
+
+      const job = saved as JobStatus;
+      if (job.status !== 'completed' && job.status !== 'failed') {
+        job.status = 'failed';
+        job.error = 'The server restarted before this download finished. The download was not resumed; completed files and nonstop queue recovery are managed separately.';
+        job.finished_at = Date.now();
+        persistWorkspaceJob(job, workspaceId);
+      }
+      jobs.set(fileJobId, job);
+    } catch (error: any) {
+      console.warn(`[Workspace] Could not restore job record ${fileName}: ${error.message}`);
+    }
+  }
+}
+
 // Logs are partitioned by a signed, anonymous browser workspace cookie.
 // AsyncLocalStorage carries the requesting workspace into background promises
 // and Python-runner callbacks without changing the extraction/queue code.
@@ -697,10 +740,12 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         total_bytes: 0, started_at: Date.now(),
       };
       getWorkspaceJobs().set(job_id, job);
+      persistWorkspaceJob(job, workspaceId);
       addLog('info', `[Nonstop Queue ${queue.current_index}/${queue.total_items}] Downloading: ${cleanTitle}`);
 
       try {
         job.status = 'downloading';
+        persistWorkspaceJob(job, workspaceId);
         const result = await runPythonRunner('download-job', {
           job_id, media_url: item.media_url, title: cleanTitle, format_id: item.format_id,
         });
@@ -734,6 +779,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
           job.status = 'failed';
           job.error = 'Halted by user';
           job.finished_at = Date.now();
+          persistWorkspaceJob(job, workspaceId);
           return;
         }
         job.status = 'failed';
@@ -743,6 +789,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
       }
 
+      persistWorkspaceJob(job, workspaceId);
       runtime.currentItem = null;
       await persistNonstopQueueState(workspaceId);
     } finally {
@@ -944,11 +991,13 @@ app.post('/api/download', async (req, res) => {
   };
 
   getWorkspaceJobs().set(job_id, job);
+  persistWorkspaceJob(job);
   addLog('info', `Enqueued single download [${job_id}] for: ${cleanTitle}`);
 
   (async () => {
     try {
       job.status = 'downloading';
+      persistWorkspaceJob(job);
       const result = await runPythonRunner('download-job', {
         job_id,
         media_url,
@@ -978,10 +1027,12 @@ app.post('/api/download', async (req, res) => {
         job.finished_at = Date.now();
         addLog('error', `Job [${job_id}] failed: ${job.error}`);
       }
+      persistWorkspaceJob(job);
     } catch (err: any) {
       job.status = 'failed';
       job.error = err.message;
       job.finished_at = Date.now();
+      persistWorkspaceJob(job);
       addLog('error', `Job [${job_id}] unexpected error: ${err.message}`);
     }
   })();
@@ -1244,6 +1295,7 @@ app.post('/api/jobs/cancel/:id', (req, res) => {
     job.status = 'failed';
     job.error = 'Canceled by user';
     job.finished_at = Date.now();
+    persistWorkspaceJob(job);
     addLog('warn', `Job [${jobId}] canceled by user`);
     return res.json({ success: true, message: `Job ${jobId} canceled` });
   }
@@ -1289,25 +1341,8 @@ app.delete('/api/jobs', (req, res) => {
 
 // 5. Jobs Status
 app.get('/api/jobs', (req, res) => {
-  // Sync state from logs/jobs if available
-  const jobsDir = path.join(workspaceStoragePaths().logs, 'jobs');
-  if (fs.existsSync(jobsDir)) {
-    const files = fs.readdirSync(jobsDir).filter((f) => f.endsWith('.json'));
-    files.forEach((f) => {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(jobsDir, f), 'utf-8'));
-        if (data.job_id && getWorkspaceJobs().has(data.job_id)) {
-          const current = getWorkspaceJobs().get(data.job_id)!;
-          if (current.status !== 'completed' && current.status !== 'failed') {
-            Object.assign(current, data);
-          }
-        }
-      } catch {
-        // ignore parse errors
-      }
-    });
-  }
-
+  const workspaceId = getWorkspaceId();
+  restoreWorkspaceJobs(workspaceId);
   const jobsList = Array.from(getWorkspaceJobs().values()).sort((a, b) => b.started_at - a.started_at);
   res.json({ success: true, jobs: jobsList });
 });
