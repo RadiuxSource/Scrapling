@@ -22,10 +22,9 @@ class YtDlpDownloaderLogger:
     def info(self, msg):
         pass
     def warning(self, msg):
-        pass
+        logger.warning("yt-dlp: %s", msg)
     def error(self, msg):
-        # Log to debug so it does not clutter engine status logs as fatal errors
-        logger.debug(f"yt-dlp notice: {msg}")
+        logger.warning("yt-dlp: %s", msg)
 
 DIRECT_MEDIA_EXTENSIONS = (
     ".mp4", ".webm", ".mov", ".mkv", ".m4v", ".flv", ".avi", ".ts", ".3gp", ".m3u8", ".mpd"
@@ -325,6 +324,7 @@ class VideoDownloader:
             try:
                 cmd = [
                     "curl", "-sSL", "-L", "--fail",
+                    "--retry", "3", "--retry-all-errors", "--retry-delay", "1",
                     "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                     "-e", ref,
                     "--connect-timeout", "15",
@@ -373,11 +373,17 @@ class VideoDownloader:
                 if res.returncode == 0 and final_filepath.exists() and final_filepath.stat().st_size > 1000:
                     logger.info("[Tier 3] FFmpeg direct stream copy succeeded.")
                     return
+                if res.stderr:
+                    logger.warning("[Tier 3] FFmpeg rejected the source: %s", res.stderr[-1200:].strip())
             except Exception as ffmpeg_err:
                 logger.warning(f"[Tier 3] FFmpeg stream copy failed: {ffmpeg_err}")
 
         if not stream_success or not temp_download_path.exists() or temp_download_path.stat().st_size == 0:
-            raise RuntimeError(f"Unable to download media stream (403 Forbidden bypassed all available methods for {media_url})")
+            temp_download_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "Direct media download failed: the source did not provide a downloadable media response. "
+                "The URL may require authorization, a valid source session, or may be protected by the host."
+            )
 
         report_progress({"status": "processing_ffmpeg", "progress_percent": 95.0})
         # Convert/remux the downloaded raw stream into standard MP4
@@ -457,8 +463,22 @@ class VideoDownloader:
             "concurrent_fragment_downloads": 6,
             "buffersize": 1024 * 1024,
             "socket_timeout": 25,
+            "extractor_retries": 3,
+            "file_access_retries": 3,
             "logger": YtDlpDownloaderLogger()
         }
+
+        # Optional user-supplied cookies for sources that require an authorized
+        # session. The cookie file must be mounted/provided securely by the
+        # deployment owner; never put cookie contents in source control.
+        cookie_file = os.environ.get("YTDLP_COOKIES_FILE")
+        if cookie_file:
+            cookie_path = Path(cookie_file).expanduser()
+            if cookie_path.is_file():
+                ydl_opts["cookiefile"] = str(cookie_path)
+                logger.info("yt-dlp authorized cookie file is configured.")
+            else:
+                logger.warning("YTDLP_COOKIES_FILE is set but the file is not readable; continuing without cookies.")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(media_url, download=True)

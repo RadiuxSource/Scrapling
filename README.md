@@ -498,3 +498,11 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - When a nonstop queue checkpoint cannot be confirmed, the queue remains held and the server retries the Supabase backup every 20 seconds. The Python downloader still does not start until the remote checkpoint is confirmed; after a successful retry, processing resumes automatically.
 - **Required Supabase action:** run the updated `supabase-queue-schema.sql` in the configured project's SQL Editor. It now creates both the queue-state table migration and the workspace-metadata table. Existing `23514` CHECK constraint failures cannot be repaired by a Git commit alone.
 - Extraction and the normal successful download path are unchanged.
+
+
+#### Downloader runtime and modern YouTube compatibility (11/11)
+- Added the missing system `curl` binary to the production image; the direct-download fallback previously failed immediately with `No such file or directory: 'curl'`.
+- Added the Deno JavaScript runtime and installed `yt-dlp[default]` (including its matching EJS challenge components) so modern yt-dlp builds can solve YouTube's JavaScript challenges.
+- Improved downloader diagnostics and transient curl retries. FFmpeg rejection details are now logged, and failed direct-stream attempts remove partial temporary files instead of leaving misleading artifacts.
+- Added optional `YTDLP_COOKIES_FILE` support for a securely mounted cookie file when a source requires the operator's authorized session. Cookie contents must never be committed or pasted into logs.
+- The normal extraction path and direct-media-first behavior remain unchanged. This improves compatibility; it cannot guarantee access to DRM-protected, private, paid, geo-restricted, or otherwise access-controlled media.

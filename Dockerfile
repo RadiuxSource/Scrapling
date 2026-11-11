@@ -6,10 +6,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
     ffmpeg \
+    curl \
     procps \
     ca-certificates \
     libatomic1 \
     && rm -rf /var/lib/apt/lists/*
+
+# yt-dlp uses Deno to solve modern YouTube JavaScript challenges.
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
+    && deno --version
 
 COPY package*.json ./
 
