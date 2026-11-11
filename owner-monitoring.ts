@@ -200,9 +200,13 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   }
   if (text.startsWith('/botinfos')) {
     const ids = options.getWorkspaceIds();
+    const defaultBot: any = LOG_BOT_TOKEN ? await telegram('getMe', {}).catch(() => null) : null;
     const rows = ids.map(id => loadWorkspaceSummary(root, id)).map(x =>
-      x.browser_id + ' | name=' + (x.name || 'null') + ' | bot=' + (x.settings.bot_username || 'unknown') +
-      ' | channel_name=' + (x.settings.telegram_channel_title || 'null') + ' | channel_type=' + (x.settings.telegram_channel_type || 'null') + ' | token=' + (x.settings.telegram_bot_token_masked || 'null') + ' | channel=' + (x.settings.telegram_chat_id || 'null') +
+      x.browser_id + ' | name=' + (x.name || 'null') + ' | bot=' + (x.settings.bot_username || (x.settings.effective_bot_source === 'deployment_default' ? defaultBot?.username : null) || 'null') +
+      ' | bot_source=' + x.settings.effective_bot_source + ' | channel_name=' + (x.settings.telegram_channel_title || 'null') + ' | channel_type=' + (x.settings.telegram_channel_type || 'null') +
+      ' | bot_token=' + (x.settings.telegram_bot_token_masked || 'null') + ' | user_channel=' + (x.settings.telegram_chat_id || 'null') + ' | effective_channel=' + (x.settings.effective_channel_id || 'null') +
+      ' | api_id_configured=' + x.settings.telegram_api_id_configured + ' | api_hash_configured=' + x.settings.telegram_api_hash_configured +
+      ' | thread_id=' + (x.settings.telegram_thread_id || 'null') + ' | auto_upload=' + x.settings.auto_upload_telegram +
       ' | invite=' + (x.settings.invite_link || 'null') + ' | invite_status=' + x.settings.invite_link_status
     );
     const file = path.join(root, 'data', 'owner-monitoring', 'exports', 'botinfos.txt');

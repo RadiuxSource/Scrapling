@@ -1799,7 +1799,7 @@ async function startServer() {
 
   httpServer = app.listen(PORT, '0.0.0.0', () => {
     addLog('info', `Vortex Video Scraper & Downloader online on http://0.0.0.0:${PORT}`);
-    void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Koyeb instance started; Vortex web server is online', details: { port: PORT, node_version: process.version, queue_restore_summary: JSON.stringify(startupQueueRestoreSummary), workspace_secret_configured: Boolean(process.env.WORKSPACE_SECRET), supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) } });
+    void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Koyeb instance started; Vortex web server is online', details: { port: PORT, node_version: process.version, workspace_secret_configured: Boolean(process.env.WORKSPACE_SECRET), supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) } });
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
@@ -1899,8 +1899,22 @@ async function restoreAllWorkspaceState() {
 }
 
 async function bootstrapServer() {
-  await restoreAllWorkspaceState();
+  // Start accepting traffic promptly; recovery runs immediately after listen.
   await startServer();
+  await restoreAllWorkspaceState();
+  const resumed = startupQueueRestoreSummary.filter((item) => Number(item.pending_items) > 0 && item.queue_running).length;
+  const failed = startupQueueRestoreSummary.filter((item) => item.restore_status !== 'success').length;
+  void recordOperationalEvent(ROOT_DIR, {
+    category: 'server-recovery',
+    summary: 'Startup recovery scan completed for saved browser workspaces',
+    details: {
+      workspaces_checked: startupQueueRestoreSummary.length,
+      queues_resumed: resumed,
+      restore_failures: failed,
+      browsers: JSON.stringify(startupQueueRestoreSummary.slice(0, 20)),
+      additional_browser_summaries_omitted: Math.max(0, startupQueueRestoreSummary.length - 20),
+    },
+  });
 }
 
 bootstrapServer().catch((err) => {
