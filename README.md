@@ -324,6 +324,13 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 ## Fix log
 
+### 11/11 — Queue restore timeout and notification visibility
+- Added a 12-second timeout to the Supabase queue restore request so a stalled network request cannot leave the recovery indicator spinning indefinitely.
+- Kept restore status available to the dashboard for up to 45 seconds after success or cancellation, instead of clearing it on the first status poll.
+- Kept cancellation distinct from timeout: a user-cancelled restore reports cancellation, while an expired request reports a timeout error and can fall back to the local queue checkpoint.
+- This change improves restore feedback; verify recovery against the configured Supabase project after redeployment.
+
+
 ### 10/11 — Supabase URL validation still rejecting a valid Project URL
 - Hardened `SUPABASE_URL` parsing to accept the canonical `https://<project-ref>.supabase.co` origin, an optional trailing slash, and the `/rest/v1` REST endpoint.
 - The parser now explicitly validates the Supabase project hostname and rejects unexpected path segments, rather than treating the normal root slash as an invalid path.
