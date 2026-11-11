@@ -90,7 +90,7 @@ export const TelegramHub: React.FC<TelegramHubProps> = ({
                 {chatId.trim() && !token.trim() && !settings.telegram_credentials_configured ? (
                   <p>You entered a channel but no custom bot token. The platform's default bot will be used. Please add the platform bot to your channel as an administrator with permission to post messages. Alternatively, enter your own bot token from @BotFather.</p>
                 ) : (
-                  <p>You entered a custom bot token but no channel ID. The configured default log/backup channel will be used. Please add this bot to that channel as an administrator with permission to post messages, or enter your own channel ID.</p>
+                  <p>You entered a bot token but no channel ID. Vortex will use the platform's default bot and default log/backup channel for this incomplete setup. Enter a channel ID as well to use your custom bot.</p>
                 )}
               </div>
             )}
@@ -276,7 +276,7 @@ export const TelegramHub: React.FC<TelegramHubProps> = ({
               <strong className="text-slate-100 block">How bot and channel fallback works</strong>
               <p><strong className="text-slate-200">Both supplied:</strong> your bot sends to your channel.</p>
               <p><strong className="text-slate-200">Channel only:</strong> the platform default bot sends to your channel. Add that bot as a channel administrator with posting permission.</p>
-              <p><strong className="text-slate-200">Bot only:</strong> your bot uses the platform's default log/backup channel. Add your bot there as an administrator with posting permission.</p>
+              <p><strong className="text-slate-200">Bot only:</strong> the platform default bot and default log/backup channel are used; the incomplete custom bot setting is not used.</p>
               <p><strong className="text-slate-200">Neither supplied:</strong> platform defaults are used for both bot and destination.</p>
               <p className="text-amber-200">A custom bot or channel is used only when the corresponding value is valid and the bot can post there. A failed custom configuration does not silently guarantee delivery.</p>
             </div>

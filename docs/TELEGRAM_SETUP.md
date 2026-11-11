@@ -18,12 +18,12 @@ For a public channel, use @channel_username. For a private channel, use its nume
 |---|---|---|---|
 | Present | Present | User's bot | User's channel |
 | Missing | Present | Deployment default bot | User's channel |
-| Present | Missing | User's bot | Deployment default log/backup channel |
+| Present | Missing | Deployment default bot | Deployment default log/backup channel |
 | Missing | Missing | Deployment default bot | Deployment default log/backup channel |
 
 If only a channel is entered, add the deployment's default bot to that channel as an administrator with posting permission.
 
-If only a bot is entered, that bot must be added to the deployment's default log/backup channel as an administrator with posting permission.
+If only a bot is entered without a channel ID, the incomplete custom pair is ignored and the deployment default bot plus default log/backup channel are used. Enter both custom values to use your own bot.
 
 Vortex displays a warning while only one side of a custom bot/channel pair is configured. The warning clears when both sides are supplied, or when the saved configuration already contains the corresponding bot credential.
 
