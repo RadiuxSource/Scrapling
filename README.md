@@ -490,3 +490,11 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Nonstop queue submissions now deduplicate video URLs across the entire active queue run, including pending, in-progress and completed items. The URL set is saved in each queue checkpoint and restored after a server restart. Repeated submissions no longer inflate a 100-video batch into 200 or 300 entries; the API reports duplicates skipped.
 - Added an integration test for repeated batch submissions.
 - The Supabase `23514` constraint error still requires running the updated `supabase-queue-schema.sql` in the actual Supabase SQL Editor. A Git commit cannot alter the live database. The legacy `main` row is intentionally retained and requires a separate owner-authorized claim from the original browser workspace.
+
+
+#### Durable owner workspace metadata and queue backup retry (11/11)
+- Added a dedicated Supabase table, `vortex_workspace_metadata`, for non-secret workspace metadata such as owner-assigned friendly names and operational labels. Metadata is restored into the workspace registry after a Koyeb instance replacement; workspace settings and Telegram credentials are not copied into this table.
+- Owner name changes are only reported as durably saved after Supabase returns the matching metadata row. Local metadata remains as a same-instance fallback.
+- When a nonstop queue checkpoint cannot be confirmed, the queue remains held and the server retries the Supabase backup every 20 seconds. The Python downloader still does not start until the remote checkpoint is confirmed; after a successful retry, processing resumes automatically.
+- **Required Supabase action:** run the updated `supabase-queue-schema.sql` in the configured project's SQL Editor. It now creates both the queue-state table migration and the workspace-metadata table. Existing `23514` CHECK constraint failures cannot be repaired by a Git commit alone.
+- Extraction and the normal successful download path are unchanged.

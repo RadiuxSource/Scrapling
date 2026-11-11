@@ -40,3 +40,16 @@ alter table public.vortex_queue_state enable row level security;
 -- with SUPABASE_SERVICE_ROLE_KEY, which bypasses RLS.
 revoke all on table public.vortex_queue_state from anon, authenticated;
 grant all on table public.vortex_queue_state to service_role;
+
+
+-- Durable, non-secret browser workspace metadata (friendly names and operational labels).
+-- Workspace settings and Telegram credentials remain in their existing protected storage.
+create table if not exists public.vortex_workspace_metadata (
+  id text primary key,
+  metadata jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.vortex_workspace_metadata enable row level security;
+revoke all on table public.vortex_workspace_metadata from anon, authenticated;
+grant all on table public.vortex_workspace_metadata to service_role;

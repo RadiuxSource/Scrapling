@@ -41,7 +41,72 @@ function atomicJson(file: string, value: any) {
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
   fs.renameSync(tmp, file);
 }
-export function browserIdForWorkspace(workspaceId: string) { return 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(); }
+export 
+const metadataSyncAt = new Map<string, number>();
+let metadataRestorePromise: Promise<void> | null = null;
+function metadataSupabaseConfig() {
+  const raw = String(process.env.SUPABASE_URL || '').trim().replace(/^["']|["']$/g, '');
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!raw || !key) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.hostname === 'supabase.com' || parsed.hostname === 'www.supabase.com') {
+      const project = parsed.pathname.match(/^\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i)?.[1];
+      if (project) return { url: 'https://' + project + '.supabase.co', key };
+    }
+    if (parsed.protocol === 'https:' && /^[a-z0-9-]+\.supabase\.co$/i.test(parsed.hostname)) return { url: parsed.origin, key };
+  } catch {}
+  return null;
+}
+async function persistWorkspaceMetadata(root: string, workspaceId: string, metadata: Record<string, any>): Promise<boolean> {
+  const config = metadataSupabaseConfig();
+  if (!config) return false;
+  try {
+    const response = await fetch(config.url + '/rest/v1/vortex_workspace_metadata?on_conflict=id', {
+      method: 'POST',
+      headers: { apikey: config.key, Authorization: 'Bearer ' + config.key, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify({ id: workspaceId, metadata, updated_at: new Date().toISOString() }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error('Supabase metadata backup HTTP ' + response.status + ': ' + (await response.text()).slice(0, 250));
+    const rows = await response.json() as Array<{ id?: string; metadata?: any }>;
+    if (!Array.isArray(rows) || !rows.some(row => row.id === workspaceId && row.metadata?.browser_id === metadata.browser_id)) {
+      throw new Error('Supabase did not confirm the workspace metadata row.');
+    }
+    metadataSyncAt.set(workspaceId, Date.now());
+    return true;
+  } catch (error: any) {
+    console.warn('[Owner monitoring] Workspace metadata backup failed for ' + browserLabel(workspaceId) + ': ' + error.message);
+    return false;
+  }
+}
+async function ensureWorkspaceMetadataRestored(root: string): Promise<void> {
+  if (metadataRestorePromise) return metadataRestorePromise;
+  metadataRestorePromise = (async () => {
+    const config = metadataSupabaseConfig();
+    if (!config) return;
+    try {
+      const response = await fetch(config.url + '/rest/v1/vortex_workspace_metadata?select=id,metadata', {
+        headers: { apikey: config.key, Authorization: 'Bearer ' + config.key },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!response.ok) throw new Error('Supabase metadata restore HTTP ' + response.status + ': ' + (await response.text()).slice(0, 250));
+      const rows = await response.json() as Array<{ id?: string; metadata?: Record<string, any> }>;
+      for (const row of rows) {
+        if (!row.id || !/^[0-9a-f-]{36}$/i.test(row.id) || !row.metadata || typeof row.metadata !== 'object') continue;
+        const file = metaFile(root, row.id);
+        const local = safeJson(file, {});
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        atomicJson(file, { ...row.metadata, ...local, browser_id: browserLabel(row.id) });
+        metadataSyncAt.set(row.id, Date.now());
+      }
+    } catch (error: any) {
+      console.warn('[Owner monitoring] Could not restore workspace metadata from Supabase: ' + error.message);
+    }
+  })().finally(() => { metadataRestorePromise = null; });
+  return metadataRestorePromise;
+}
+function browserIdForWorkspace(workspaceId: string) { return 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(); }
 function browserLabel(workspaceId: string) { return browserIdForWorkspace(workspaceId); }
 function workspaceRoot(root: string, id: string) { return path.join(root, 'data', 'workspaces', id); }
 function metaFile(root: string, id: string) { return path.join(workspaceRoot(root, id), 'workspace.json'); }
@@ -280,12 +345,14 @@ async function ensureLogForumTopic(root: string) {
 }
 export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
   void ensureLogForumTopic(options.rootDir);
-  app.post('/api/workspace/name', (req: Request, res: Response) => {
+  app.post('/api/workspace/name', async (req: Request, res: Response) => {
     const id = String((req as any).workspaceId || '');
     const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 50) : '';
     if (!id || !name) return res.status(400).json({ success: false, error: 'A non-empty browser name (max 50 characters) is required.' });
     const file = metaFile(options.rootDir, id); const metadata = safeJson(file, {});
-    atomicJson(file, { ...metadata, name, name_updated_at: Date.now() });
+    const updated = { ...metadata, name, name_updated_at: Date.now() };
+    atomicJson(file, updated);
+    if (!await persistWorkspaceMetadata(options.rootDir, id, updated)) return res.status(503).json({ success: false, error: 'Name saved locally, but Supabase did not confirm durable workspace metadata. Check Supabase configuration and run the latest schema migration.' });
     void recordOperationalEvent(options.rootDir, { category: 'workspace', summary: 'Browser workspace name updated', workspaceId: id, details: { name } });
     res.json({ success: true, browser_id: browserLabel(id), name });
   });
@@ -330,22 +397,26 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     res.setHeader('Set-Cookie', COOKIE + '=; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=0');
     res.json({ success: true });
   });
-  app.get('/api/owner/summary', ownerMiddleware, (_req: Request, res: Response) => {
+  app.get('/api/owner/summary', ownerMiddleware, async (_req: Request, res: Response) => {
+    await ensureWorkspaceMetadataRestored(options.rootDir);
     const workspaces = options.getWorkspaceIds().map(id => loadWorkspaceSummary(options.rootDir, id));
     res.json({ success: true, server: { uptime_seconds: Math.floor(process.uptime()), node_version: process.version, started_at: new Date(Date.now() - process.uptime() * 1000).toISOString(), log_bot_configured: Boolean(LOG_BOT_TOKEN), log_chat_configured: Boolean(LOG_CHAT_ID), owner_telegram_configured: Boolean(OWNER_TELEGRAM_ID) }, workspaces });
   });
-  app.get('/api/owner/workspaces/:browserId', ownerMiddleware, (req: Request, res: Response) => {
+  app.get('/api/owner/workspaces/:browserId', ownerMiddleware, async (req: Request, res: Response) => {
+    await ensureWorkspaceMetadataRestored(options.rootDir);
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
     if (!id) return res.status(404).json({ success: false, error: 'Browser workspace not found.' });
     res.json({ success: true, workspace: loadWorkspaceSummary(options.rootDir, id) });
   });
-  app.post('/api/owner/workspaces/:browserId/name', ownerMiddleware, (req: Request, res: Response) => {
+  app.post('/api/owner/workspaces/:browserId/name', ownerMiddleware, async (req: Request, res: Response) => {
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
     const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 50) : '';
     if (!id) return res.status(404).json({ success: false, error: 'Browser workspace not found.' });
     if (!name) return res.status(400).json({ success: false, error: 'A non-empty name (max 50 characters) is required.' });
     const file = metaFile(options.rootDir, id); const metadata = safeJson(file, {});
-    atomicJson(file, { ...metadata, name, name_updated_at: Date.now() });
+    const updated = { ...metadata, name, name_updated_at: Date.now() };
+    atomicJson(file, updated);
+    if (!await persistWorkspaceMetadata(options.rootDir, id, updated)) return res.status(503).json({ success: false, error: 'Name saved locally, but Supabase did not confirm durable workspace metadata. Check Supabase configuration and run the latest schema migration.' });
     void recordOperationalEvent(options.rootDir, { category: 'workspace', summary: 'Owner assigned a browser workspace name', workspaceId: id, details: { name } });
     res.json({ success: true, name, browser_id: browserLabel(id) });
   });
@@ -403,7 +474,12 @@ export function touchWorkspace(root: string, workspaceId: string) {
   const file = metaFile(root, workspaceId);
   const current = safeJson(file, {});
   const now = Date.now();
-  atomicJson(file, { ...current, browser_id: browserLabel(workspaceId), created_at: current.created_at || now, last_seen_at: now });
+  const updated = { ...current, browser_id: browserLabel(workspaceId), created_at: current.created_at || now, last_seen_at: now };
+  atomicJson(file, updated);
+  if (now - (metadataSyncAt.get(workspaceId) || 0) > 60_000) {
+    metadataSyncAt.set(workspaceId, now);
+    void persistWorkspaceMetadata(root, workspaceId, updated);
+  }
 }
 export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: string) {
   let discoveredBotUsername: string | null = null;

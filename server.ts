@@ -551,6 +551,7 @@ interface QueueRuntime {
   workerActive: boolean;
   dispatchScheduled: boolean;
   restorePromise: Promise<void> | null;
+  backupRetryTimer: ReturnType<typeof setTimeout> | null;
 }
 const queueRuntimes = new Map<string, QueueRuntime>();
 const queueRunIds = new Map<string, string>();
@@ -573,6 +574,7 @@ function createQueueRuntime(): QueueRuntime {
     workerActive: false,
     dispatchScheduled: false,
     restorePromise: null,
+    backupRetryTimer: null,
   };
 }
 function getQueueRuntime(workspaceId = getWorkspaceId()): QueueRuntime {
@@ -686,6 +688,7 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
         }
         runtime.lastRemoteSaveAt = Math.max(runtime.lastRemoteSaveAt, state.saved_at);
         runtime.lastRemoteSaveError = null;
+        if (runtime.backupRetryTimer) { clearTimeout(runtime.backupRetryTimer); runtime.backupRetryTimer = null; }
         return;
       } catch (err: any) {
         lastError = err?.name === 'TimeoutError' ? 'Supabase queue backup timed out after 12 seconds.' : err.message;
@@ -694,8 +697,27 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
     }
     runtime.lastRemoteSaveError = lastError;
     addLog('error', `Supabase queue backup failed after 3 attempts; queue processing is paused to avoid losing pending downloads on Koyeb restart: ${lastError}`);
+    scheduleQueueBackupRetry(workspaceId);
   });
   return runtime.saveChain;
+}
+
+
+function scheduleQueueBackupRetry(workspaceId: string): void {
+  const runtime = getQueueRuntime(workspaceId);
+  if (runtime.backupRetryTimer || isShuttingDown || !runtime.state.is_running || runtime.state.pending_items.length === 0 && !runtime.currentItem) return;
+  runtime.backupRetryTimer = setTimeout(async () => {
+    runtime.backupRetryTimer = null;
+    if (isShuttingDown || !runtime.state.is_running) return;
+    await persistNonstopQueueState(workspaceId);
+    if (runtime.lastRemoteSaveAt >= runtime.latestQueueMutationAt && runtime.state.pending_items.length > 0 && !runtime.workerActive) {
+      addLog('info', 'Supabase queue checkpoint is now confirmed; automatically resuming nonstop downloads.');
+      void processNextNonstopItem(workspaceId);
+    } else if (runtime.state.is_running) {
+      scheduleQueueBackupRetry(workspaceId);
+    }
+  }, 20_000);
+  runtime.backupRetryTimer.unref?.();
 }
 
 async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
@@ -1423,7 +1445,7 @@ app.post('/api/download-all-nonstop', async (req, res) => {
   if (runtime.lastRemoteSaveAt < runtime.latestQueueMutationAt) {
     return res.status(503).json({
       success: false,
-      error: 'The queue was added in memory but could not be durably backed up to Supabase. Downloads are paused so Koyeb restart cannot silently discard these items. Check Supabase configuration/table permissions and retry.',
+      error: 'The queue is safely held in this running instance and will retry its Supabase backup every 20 seconds. Downloads will begin automatically only after Supabase confirms the checkpoint. If this is PostgreSQL error 23514, run the latest supabase-queue-schema.sql in the Supabase SQL Editor.',
       backup_error: runtime.lastRemoteSaveError || 'Supabase checkpoint verification is pending.',
       queue: { total: queue.total_items, current: queue.current_index, pending: queue.pending_items.length, is_running: queue.is_running },
     });
@@ -1456,6 +1478,7 @@ app.get('/api/nonstop-queue/status', async (_req, res) => {
       pending_count: queue.pending_items.length,
       durable_backup: {
         configured: Boolean(getSupabaseQueueConfig()),
+        retrying: Boolean(runtime.backupRetryTimer),
         confirmed: runtime.lastRemoteSaveAt >= runtime.latestQueueMutationAt && runtime.latestQueueMutationAt > 0,
         last_error: runtime.lastRemoteSaveError,
       },
