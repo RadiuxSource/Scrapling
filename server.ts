@@ -1005,7 +1005,10 @@ app.post('/api/nonstop-queue/legacy-migration/claim', async (req, res) => {
 
   const workspaceId = getWorkspaceId();
   const runtime = getQueueRuntime(workspaceId);
-  if (runtime.restoreStatus === 'restoring' || runtime.restoreCompleted ||
+  // A normal page load checks restore-status first, which marks an empty
+  // workspace as restoreCompleted. That alone is not queue activity and must
+  // not prevent the owner from claiming the retained legacy queue.
+  if (runtime.restoreStatus === 'restoring' || runtime.workerActive || runtime.state.is_running ||
       runtime.state.total_items > 0 || runtime.state.pending_items.length > 0 || runtime.currentItem) {
     return res.status(409).json({ success: false, error: 'This browser workspace already has queue activity. Migration was not started.' });
   }
