@@ -249,6 +249,17 @@ function addLog(level: 'info' | 'warn' | 'error', message: string) {
   logs.push(entry);
   if (logs.length > 300) logs.shift();
   workspaceLogs.set(workspaceId, logs);
+  if (/^[0-9a-f-]{36}$/i.test(workspaceId)) {
+    try {
+      const logFile = path.join(workspaceStoragePaths(workspaceId).logs, 'engine.jsonl');
+      fs.appendFileSync(logFile, JSON.stringify(entry) + '\\n');
+      const stats = fs.statSync(logFile);
+      if (stats.size > 2 * 1024 * 1024) {
+        const tail = fs.readFileSync(logFile, 'utf8').slice(-1024 * 1024);
+        fs.writeFileSync(logFile, tail.slice(tail.indexOf('\\n') + 1));
+      }
+    } catch (error: any) { console.warn('[Workspace] Could not persist engine log:', error.message); }
+  }
 }
 
 // Parsed link sessions are private to each anonymous browser workspace.
@@ -910,6 +921,9 @@ app.post('/api/test-website', async (req, res) => {
   registerParsedLink(url.trim());
 
   addLog('info', `Testing website deep inspection on: ${url}`);
+  const testActionId = 'test_' + randomUUID();
+  const workspaceId = getWorkspaceId();
+  void recordOperationalEvent(ROOT_DIR, { category: 'website-test', summary: 'Website inspection test started', workspaceId, actionId: testActionId, phase: 'start', details: { url, max_subpages: max_subpages ?? 20, subpage_offset: subpage_offset || 0 } });
   try {
     const result = await runPythonRunner('test-website', {
       url: url.trim(),
@@ -917,10 +931,12 @@ app.post('/api/test-website', async (req, res) => {
       telegram_chat_id,
       max_subpages: max_subpages !== undefined ? max_subpages : 20,
       subpage_offset: subpage_offset || 0,
-    }, 180000);
+    }, 180000, testActionId);
+    void recordOperationalEvent(ROOT_DIR, { category: 'website-test', summary: 'Website inspection test ended', workspaceId, actionId: testActionId, phase: 'end', details: { success: Boolean(result?.success), detected_videos: result?.inspection?.videos?.length ?? 0 } });
     res.json(result);
   } catch (err: any) {
     addLog('error', `Test website failed: ${err.message}`);
+    void recordOperationalEvent(ROOT_DIR, { category: 'website-test', summary: 'Website inspection test failed', workspaceId, actionId: testActionId, phase: 'end', details: { error: err.message } });
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -1067,6 +1083,8 @@ app.post('/api/download', async (req, res) => {
   getWorkspaceJobs().set(job_id, job);
   persistWorkspaceJob(job);
   addLog('info', `Enqueued single download [${job_id}] for: ${cleanTitle}`);
+  const workspaceId = getWorkspaceId();
+  void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Single download started', workspaceId, actionId: job_id, phase: 'start', details: { job_id, title: cleanTitle, media_url, format_id: format_id || null } });
 
   (async () => {
     try {
@@ -1077,7 +1095,7 @@ app.post('/api/download', async (req, res) => {
         media_url,
         title: cleanTitle,
         format_id,
-      });
+      }, 0, job_id);
 
       if (result.status === 'completed') {
         job.status = 'completed';
@@ -1102,12 +1120,14 @@ app.post('/api/download', async (req, res) => {
         addLog('error', `Job [${job_id}] failed: ${job.error}`);
       }
       persistWorkspaceJob(job);
+      void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Single download ended', workspaceId, actionId: job_id, phase: 'end', details: { job_id, title: cleanTitle, status: job.status, error: job.error || null, output_filename: job.output_filename || null, duration_ms: job.finished_at ? job.finished_at - job.started_at : null } });
     } catch (err: any) {
       job.status = 'failed';
       job.error = err.message;
       job.finished_at = Date.now();
       persistWorkspaceJob(job);
       addLog('error', `Job [${job_id}] unexpected error: ${err.message}`);
+      void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Single download failed unexpectedly', workspaceId, actionId: job_id, phase: 'end', details: { job_id, title: cleanTitle, status: 'failed', error: err.message } });
     }
   })();
 
@@ -1656,15 +1676,19 @@ app.get('/api/reports', (req, res) => {
 // 8. Telegram Bot API Integration
 app.post('/api/telegram/test', async (req, res) => {
   const { telegram_bot_token, telegram_chat_id, telegram_api_id, telegram_api_hash } = req.body;
+  const actionId = 'telegram_test_' + randomUUID(); const workspaceId = getWorkspaceId();
+  void recordOperationalEvent(ROOT_DIR, { category: 'telegram-test', summary: 'Telegram connection test started', workspaceId, actionId, phase: 'start', details: { custom_bot_supplied: Boolean(telegram_bot_token), custom_channel_supplied: Boolean(telegram_chat_id) } });
   try {
     const result = await runPythonRunner('telegram-test', {
       telegram_bot_token,
       telegram_chat_id,
       telegram_api_id,
       telegram_api_hash,
-    });
+    }, 0, actionId);
+    void recordOperationalEvent(ROOT_DIR, { category: 'telegram-test', summary: 'Telegram connection test ended', workspaceId, actionId, phase: 'end', details: { success: Boolean(result?.success), bot_username: result?.bot_username || null, channel_id: result?.chat_id || telegram_chat_id || null, error: result?.error || null } });
     res.json(result);
   } catch (err: any) {
+    void recordOperationalEvent(ROOT_DIR, { category: 'telegram-test', summary: 'Telegram connection test failed', workspaceId, actionId, phase: 'end', details: { error: err.message } });
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -1692,6 +1716,8 @@ app.post('/api/telegram/upload', async (req, res) => {
     } catch {}
   }
 
+  const actionId = 'telegram_upload_' + randomUUID(); const workspaceId = getWorkspaceId();
+  void recordOperationalEvent(ROOT_DIR, { category: 'telegram-upload', summary: 'Manual Telegram media upload started', workspaceId, actionId, phase: 'start', details: { filename: cleanName, size_mb: sizeMb, destination_configured: Boolean(settings.telegram_chat_id) } });
   try {
     addLog('info', `Dispatching high-capacity video upload to Telegram: ${cleanName} (${sizeMb} MB)`);
     const result = await runPythonRunner('telegram-upload', {
@@ -1702,10 +1728,12 @@ app.post('/api/telegram/upload', async (req, res) => {
       telegram_chat_id: req.body.telegram_chat_id || settings.telegram_chat_id,
       telegram_api_id: req.body.telegram_api_id || settings.telegram_api_id,
       telegram_api_hash: req.body.telegram_api_hash || settings.telegram_api_hash,
-    });
+    }, 0, actionId);
+    void recordOperationalEvent(ROOT_DIR, { category: 'telegram-upload', summary: 'Manual Telegram media upload ended', workspaceId, actionId, phase: 'end', details: { success: Boolean(result?.success), method: result?.method || null, error: result?.error || null } });
     res.json(result);
   } catch (err: any) {
     addLog('error', `Telegram upload failed: ${err.message}`);
+    void recordOperationalEvent(ROOT_DIR, { category: 'telegram-upload', summary: 'Manual Telegram media upload failed', workspaceId, actionId, phase: 'end', details: { error: err.message } });
     res.status(500).json({ success: false, error: err.message });
   }
 });

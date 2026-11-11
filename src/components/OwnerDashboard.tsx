@@ -113,6 +113,7 @@ export const OwnerDashboard: React.FC = () => {
               <h3>Telegram configuration (secrets masked)</h3><pre>{JSON.stringify(selected.settings, null, 2)}</pre>
               <h3>Recent crawls and downloads</h3><pre>{JSON.stringify({ crawls: selected.activity.recent_crawls, jobs: selected.activity.recent_jobs }, null, 2)}</pre>
               <h3>Recent errors</h3><pre>{JSON.stringify(selected.activity.errors, null, 2)}</pre>
+              <h3>Recent engine logs</h3><pre>{(selected.activity.recent_logs || []).map((line: any) => '[' + line.timestamp + '] ' + line.level.toUpperCase() + ' ' + line.message).join('\n') || 'No persisted engine logs yet.'}</pre>
               <p className="owner-muted">Files: {selected.activity.downloads} downloads · {selected.activity.reports} reports</p>
             </div>
           </>}

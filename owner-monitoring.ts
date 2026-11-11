@@ -145,6 +145,7 @@ function loadWorkspaceSummary(root: string, id: string) {
       download_jobs: jobs.length, recent_jobs: jobs.sort((a: any, b: any) => (b.started_at || 0) - (a.started_at || 0)).slice(0, 20),
       queue: queue ? { is_running: Boolean(queue.is_running), total_items: queue.total_items || 0, current_index: queue.current_index || 0, completed_count: queue.completed_count || 0, failed_count: queue.failed_count || 0, pending_count: Array.isArray(queue.pending_items) ? queue.pending_items.length : 0, current_item: queue.current_item?.title || null, saved_at: queue.saved_at || null } : null,
       errors: recentErrors, reports: countFiles(reportsDir), downloads: countFiles(downloadsDir),
+      recent_logs: (() => { const file = path.join(base, 'logs', 'engine.jsonl'); if (!fs.existsSync(file)) return []; try { return fs.readFileSync(file, 'utf8').trim().split('\\n').slice(-200).map((line: string) => JSON.parse(line)).reverse(); } catch { return []; } })(),
     },
   };
 }
@@ -195,7 +196,7 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
     const ids = options.getWorkspaceIds();
     const rows = ids.map(id => loadWorkspaceSummary(root, id)).map(x =>
       x.browser_id + ' | name=' + (x.name || 'null') + ' | bot=' + (x.settings.bot_username || 'unknown') +
-      ' | token=' + (x.settings.telegram_bot_token_masked || 'null') + ' | channel=' + (x.settings.telegram_chat_id || 'null') +
+      ' | channel_name=' + (x.settings.telegram_channel_title || 'null') + ' | channel_type=' + (x.settings.telegram_channel_type || 'null') + ' | token=' + (x.settings.telegram_bot_token_masked || 'null') + ' | channel=' + (x.settings.telegram_chat_id || 'null') +
       ' | invite=' + (x.settings.invite_link || 'null') + ' | invite_status=' + x.settings.invite_link_status
     );
     const file = path.join(root, 'data', 'owner-monitoring', 'exports', 'botinfos.txt');
