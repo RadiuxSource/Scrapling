@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dotenv from 'dotenv';
+import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite } from './owner-monitoring.js';
 
 dotenv.config();
 
@@ -170,6 +171,7 @@ app.use((req, res, next) => {
   }
 
   (req as any).workspaceId = workspaceId;
+  touchWorkspace(ROOT_DIR, workspaceId);
   workspaceContext.run(workspaceId, next);
 });
 
@@ -860,6 +862,7 @@ app.post('/api/settings', (req, res) => {
     }
     fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2));
     addLog('info', 'Updated configuration settings');
+    if (merged.telegram_bot_token && merged.telegram_chat_id) void ensureWorkspaceTelegramInvite(ROOT_DIR, getWorkspaceId());
    const safeSettings = {
   ...merged,
   telegram_bot_token: '',
@@ -1641,6 +1644,21 @@ app.get('/api/logs', (req, res) => {
 // -------------------------------------------------------------
 // Vite Middleware / Static Serving
 // -------------------------------------------------------------
+initializeOwnerMonitoring(app, {
+  rootDir: ROOT_DIR,
+  getWorkspaceIds: () => {
+    const dir = path.join(ROOT_DIR, 'data', 'workspaces');
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((id) => /^[0-9a-f-]{36}$/i.test(id) && fs.statSync(path.join(dir, id)).isDirectory()) : [];
+  },
+  stopWorkspace: (workspaceId) => {
+    const entries = Array.from(activeProcesses.values()).filter((entry) => entry.workspaceId === workspaceId);
+    entries.forEach((entry) => terminateProcessEntry(entry));
+    const runtime = queueRuntimes.get(workspaceId);
+    if (runtime) { runtime.state.is_running = false; runtime.restoreController?.abort(); void persistNonstopQueueState(workspaceId); }
+    return { stopped: entries.length, details: entries.map((entry) => entry.action + ':' + entry.id) };
+  },
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1657,6 +1675,7 @@ async function startServer() {
 
   httpServer = app.listen(PORT, '0.0.0.0', () => {
     addLog('info', `Vortex Video Scraper & Downloader online on http://0.0.0.0:${PORT}`);
+    void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Koyeb instance started; Vortex web server is online', details: { port: PORT, node_version: process.version, workspace_secret_configured: Boolean(process.env.WORKSPACE_SECRET), supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) } });
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
@@ -1665,6 +1684,7 @@ async function shutdownGracefully(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   addLog('warn', `Received ${signal}; beginning graceful shutdown.`);
+  void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Server shutdown/restart signal received', details: { signal, active_processes: activeProcesses.size, workspaces_with_loaded_queues: queueRuntimes.size } });
 
   // Stop dispatching new items for every workspace while allowing active runners
   // to drain during the platform's termination grace period.
@@ -1688,6 +1708,8 @@ async function shutdownGracefully(signal: string) {
     await persistNonstopQueueState(workspaceId, true);
   }
 
+  const restoredQueueSummary = Array.from(queueRuntimes.entries()).map(([id, runtime]) => ({ browser_id: 'BRW-' + id.replace(/-/g, '').slice(0, 10).toUpperCase(), pending: runtime.state.pending_items.length, completed: runtime.state.completed_count, failed: runtime.state.failed_count, running: runtime.state.is_running }));
+  void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Graceful shutdown queue checkpoints saved', details: { queue_workspaces: JSON.stringify(restoredQueueSummary), active_processes_remaining: activeProcesses.size } });
   if (activeProcesses.size > 0) {
     for (const entry of activeProcesses.values()) {
       try { entry.proc?.kill('SIGTERM'); } catch {}
