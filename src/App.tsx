@@ -220,6 +220,7 @@ export default function App() {
         const res = await fetch(`/api/scrape/status/${encodeURIComponent(crawlRecovery.task_id)}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok || cancelled) return;
+        await fetchLogs();
         if (data.status === 'completed' && data.result) {
           const restored = restoreCrawlResult(data.result);
           setVideos(restored.videos);
