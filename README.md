@@ -452,3 +452,11 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - A custom channel setup triggers Bot API verification and invite-link creation. The bot/channel names, IDs, invite link, and masked credential status are included in `/botinfos`.
 - If the log destination is a forum-enabled supergroup, the monitoring bot attempts to create a dedicated **Vortex Operational Logs** topic. It falls back to the main group if topic creation or delivery is unavailable.
 - See [Telegram setup and Koyeb environment instructions](docs/TELEGRAM_SETUP.md). The Bot API cannot create a new group; the group owner must create it and add the bot.
+
+
+### 11/11 — Durable queue backup and restart-recovery diagnostics
+- Corrected the Supabase queue write to use PostgREST's explicit `on_conflict=id` upsert instead of attaching a row filter to a POST request.
+- Queue backups now request the persisted representation and verify that the expected `ws_<workspace-id>` row was returned. A failed or unverifiable remote write is logged instead of being treated as a confirmed backup.
+- When a workspace row is missing, recovery checks whether the old shared `main` queue still exists. It never assigns that queue automatically; the restore message explains that the original owner must use the one-time migration claim.
+- Restore status now includes the current pseudonymous Browser ID and workspace key, and distinguishes a genuinely missing workspace checkpoint from an available legacy queue. This helps identify a changed browser cookie or `WORKSPACE_SECRET`.
+- The normal download/extraction path is unchanged. A running item is still retried from its source URL after restart; partially downloaded bytes are not recoverable.
