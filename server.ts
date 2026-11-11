@@ -794,6 +794,13 @@ app.post('/api/settings', (req, res) => {
       current = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     }
     const merged = { ...current, ...newSettings };
+    // Secret values are intentionally omitted from GET responses. Preserve the
+    // stored credential when the UI submits an unchanged blank secret field.
+    for (const secretKey of ['telegram_bot_token', 'telegram_api_hash'] as const) {
+      if (typeof newSettings[secretKey] !== 'string' || newSettings[secretKey].length === 0) {
+        if (current[secretKey]) merged[secretKey] = current[secretKey];
+      }
+    }
     fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2));
     addLog('info', 'Updated configuration settings');
    const safeSettings = {
