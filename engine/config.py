@@ -6,14 +6,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DOWNLOADS_DIR = BASE_DIR / "downloads"
-REPORTS_DIR = BASE_DIR / "reports"
-LOGS_DIR = BASE_DIR / "logs"
-SETTINGS_FILE = BASE_DIR / "settings.json"
+DOWNLOADS_DIR = Path(os.getenv("SCRAPLING_DOWNLOADS_DIR", str(BASE_DIR / "downloads"))).resolve()
+REPORTS_DIR = Path(os.getenv("SCRAPLING_REPORTS_DIR", str(BASE_DIR / "reports"))).resolve()
+LOGS_DIR = Path(os.getenv("SCRAPLING_LOGS_DIR", str(BASE_DIR / "logs"))).resolve()
+SETTINGS_FILE = Path(os.getenv("SCRAPLING_SETTINGS_FILE", str(BASE_DIR / "settings.json"))).resolve()
 
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_SETTINGS = {
     "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
