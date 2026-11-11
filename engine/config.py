@@ -68,16 +68,25 @@ def resolve_telegram_delivery(settings=None, bot_token=None, chat_id=None):
     # The platform media bot backs up every completed video to the internal
     # operational channel. The owner explicitly designated that channel as the
     # media archive; it is no longer merely a diagnostics destination.
-    default_bot = str(os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("LOG_TELEGRAM_BOT_TOKEN") or "").strip()
+    # The platform bot owns the archive and performs the subsequent forward,
+    # so it must be the identity used for both operations. A custom workspace
+    # bot is only a last-resort sender when no platform bot exists.
+    default_bot = str(os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("LOG_TELEGRAM_BOT_TOKEN") or custom_bot or "").strip()
     default_chat = str(
         os.getenv("TELEGRAM_BACKUP_CHAT_ID")
         or os.getenv("LOG_TELEGRAM_CHAT_ID")
         or os.getenv("TELEGRAM_CHAT_ID")
         or ""
     ).strip()
+    archive_chat = default_chat or custom_chat
+    forward_chat = custom_chat if default_chat and custom_chat and custom_chat != default_chat else ""
 
-    if custom_bot and custom_chat:
-        return {"bot_token": custom_bot, "chat_id": custom_chat, "source": "custom", "api_id": settings.get("telegram_api_id", ""), "api_hash": settings.get("telegram_api_hash", ""), "backup_chat_id": default_chat, "forward_chat_id": custom_chat if default_chat and custom_chat != default_chat else ""}
-    if custom_chat:
-        return {"bot_token": default_bot, "chat_id": custom_chat, "source": "default_bot_custom_channel", "api_id": "", "api_hash": "", "backup_chat_id": default_chat, "forward_chat_id": custom_chat if default_chat and custom_chat != default_chat else ""}
-    return {"bot_token": default_bot, "chat_id": default_chat, "source": "deployment_default", "api_id": "", "api_hash": "", "backup_chat_id": default_chat, "forward_chat_id": ""}
+    return {
+        "bot_token": default_bot,
+        "chat_id": archive_chat,
+        "source": "platform_archive_forward" if forward_chat else ("deployment_default" if default_chat else "custom_fallback"),
+        "api_id": settings.get("telegram_api_id", "") if not default_chat else "",
+        "api_hash": settings.get("telegram_api_hash", "") if not default_chat else "",
+        "backup_chat_id": archive_chat,
+        "forward_chat_id": forward_chat,
+    }

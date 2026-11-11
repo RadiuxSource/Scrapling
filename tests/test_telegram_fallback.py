@@ -37,16 +37,18 @@ class TelegramFallbackTests(unittest.TestCase):
             "telegram_api_id": "123",
             "telegram_api_hash": "custom_hash",
         })
-        self.assertEqual(result["source"], "custom")
-        self.assertEqual(result["bot_token"], "CUSTOM_TOKEN")
-        self.assertEqual(result["chat_id"], "@custom_channel")
-        self.assertEqual(result["api_id"], "123")
+        self.assertEqual(result["source"], "platform_archive_forward")
+        self.assertEqual(result["bot_token"], "DEFAULT_BOT_TOKEN")
+        self.assertEqual(result["chat_id"], "-100DEFAULT")
+        self.assertEqual(result["forward_chat_id"], "@custom_channel")
+        self.assertEqual(result["api_id"], "")
 
     def test_channel_only_uses_default_bot_and_custom_channel(self):
         result = resolve_telegram_delivery({"telegram_bot_token": "", "telegram_chat_id": "@custom_channel"})
-        self.assertEqual(result["source"], "default_bot_custom_channel")
+        self.assertEqual(result["source"], "platform_archive_forward")
         self.assertEqual(result["bot_token"], "DEFAULT_BOT_TOKEN")
-        self.assertEqual(result["chat_id"], "@custom_channel")
+        self.assertEqual(result["chat_id"], "-100DEFAULT")
+        self.assertEqual(result["forward_chat_id"], "@custom_channel")
         self.assertEqual(result["api_id"], "")
 
     def test_bot_only_uses_default_pair(self):
