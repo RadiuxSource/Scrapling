@@ -79,10 +79,18 @@ function rememberMessage(root: string, messageId: number, actionId: string, phas
 async function sendActionMessage(root: string, text: string, actionId?: string, phase?: 'start' | 'end') {
   if (!LOG_BOT_TOKEN || !LOG_CHAT_ID) return null;
   try {
-    const result: any = await telegram('sendMessage', {
-      chat_id: LOG_CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true,
-      ...(logThreadId ? { message_thread_id: logThreadId } : {}),
-    });
+    let result: any;
+    try {
+      result = await telegram('sendMessage', {
+        chat_id: LOG_CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true,
+        ...(logThreadId ? { message_thread_id: logThreadId } : {}),
+      });
+    } catch (threadError: any) {
+      if (!logThreadId) throw threadError;
+      logThreadId = null;
+      if (actionId) appendOperationalDetail(root, actionId, 'Forum topic delivery failed; retrying in the main log group: ' + threadError.message);
+      result = await telegram('sendMessage', { chat_id: LOG_CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true });
+    }
     if (actionId && phase && result?.message_id) rememberMessage(root, result.message_id, actionId, phase);
     return result?.message_id ?? null;
   } catch (error: any) {
@@ -173,8 +181,12 @@ async function sendDocument(chatId: string | number, file: string, caption: stri
   if (threadId || logThreadId) form.append('message_thread_id', String(threadId || logThreadId));
   const bytes = fs.readFileSync(file);
   form.append('document', new Blob([bytes]), path.basename(file));
-  const response = await fetch('https://api.telegram.org/bot' + LOG_BOT_TOKEN + '/sendDocument', { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
-  const data: any = await response.json().catch(() => ({}));
+  const send = async () => {
+    const response = await fetch('https://api.telegram.org/bot' + LOG_BOT_TOKEN + '/sendDocument', { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
+    return await response.json().catch(() => ({})) as any;
+  };
+  let data = await send();
+  if (!data.ok && form.has('message_thread_id')) { form.delete('message_thread_id'); data = await send(); }
   if (!data.ok) throw new Error(data.description || 'sendDocument failed');
 }
 async function handleOwnerCommand(root: string, message: any, options: OwnerOptions) {
@@ -233,12 +245,12 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
 async function ensureLogForumTopic(root: string) {
   if (logThreadId || !LOG_BOT_TOKEN || !LOG_CHAT_ID) return;
   const stored = safeJson(path.join(root, 'data', 'owner-monitoring', 'log-topic.json'), {});
-  if (Number(stored.message_thread_id) > 0) { logThreadId = Number(stored.message_thread_id); return; }
+  if (String(stored.chat_id || '') === LOG_CHAT_ID && Number(stored.message_thread_id) > 0) { logThreadId = Number(stored.message_thread_id); return; }
   try {
     const topic: any = await telegram('createForumTopic', { chat_id: LOG_CHAT_ID, name: 'Vortex Operational Logs', icon_color: 7322096 });
     if (topic?.message_thread_id) {
       logThreadId = Number(topic.message_thread_id);
-      atomicJson(path.join(root, 'data', 'owner-monitoring', 'log-topic.json'), { message_thread_id: logThreadId, created_at: Date.now(), name: 'Vortex Operational Logs' });
+      atomicJson(path.join(root, 'data', 'owner-monitoring', 'log-topic.json'), { chat_id: LOG_CHAT_ID, message_thread_id: logThreadId, created_at: Date.now(), name: 'Vortex Operational Logs' });
       await telegram('sendMessage', { chat_id: LOG_CHAT_ID, message_thread_id: logThreadId, text: 'Vortex operational monitoring is connected. Server, browser, queue, crawl, download and Telegram events will appear in this topic.' });
     }
   } catch (error: any) {
@@ -355,6 +367,10 @@ export function touchWorkspace(root: string, workspaceId: string) {
   atomicJson(file, { ...current, browser_id: browserLabel(workspaceId), created_at: current.created_at || now, last_seen_at: now });
 }
 export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: string) {
+  let discoveredBotUsername: string | null = null;
+  let discoveredChannelTitle: string | null = null;
+  let discoveredChannelUsername: string | null = null;
+  let discoveredChannelType: string | null = null;
   const file = metaFile(root, workspaceId);
   const metadata = safeJson(file, {});
   const settings = safeJson(path.join(workspaceRoot(root, workspaceId), 'settings.json'), {});
@@ -368,9 +384,13 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
     const meResponse = await fetch('https://api.telegram.org/bot' + token + '/getMe', { signal: AbortSignal.timeout(10000) });
     const me: any = await meResponse.json();
     if (!me.ok) throw new Error(me.description || 'Bot token rejected');
+    discoveredBotUsername = me.result?.username || null;
     const chatResponse = await fetch('https://api.telegram.org/bot' + token + '/getChat?chat_id=' + encodeURIComponent(channel), { signal: AbortSignal.timeout(10000) });
     const chatData: any = await chatResponse.json();
     if (!chatData.ok) throw new Error(chatData.description || 'Bot cannot access the configured channel/chat.');
+    discoveredChannelTitle = chatData.result?.title || chatData.result?.first_name || null;
+    discoveredChannelUsername = chatData.result?.username || null;
+    discoveredChannelType = chatData.result?.type || null;
     const inviteResponse = await fetch('https://api.telegram.org/bot' + token + '/createChatInviteLink', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: channel, name: 'Vortex ' + browserLabel(workspaceId), creates_join_request: false }),
@@ -383,7 +403,7 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
     await recordOperationalEvent(root, { category: 'telegram-setup', summary: 'Resolved bot/channel verified and invite link created', workspaceId, details: { bot_username: next.telegram_bot_username, channel_id: channel, bot_source: next.telegram_bot_source, invite_link: next.telegram_invite_link } });
     return { status: 'created', bot_username: next.telegram_bot_username, invite_link: next.telegram_invite_link };
   } catch (error: any) {
-    atomicJson(file, { ...metadata, telegram_invite_link_status: 'failed', telegram_setup_error: String(error.message).slice(0, 300) });
+    atomicJson(file, { ...metadata, telegram_bot_username: discoveredBotUsername || metadata.telegram_bot_username || null, telegram_channel_title: discoveredChannelTitle || metadata.telegram_channel_title || null, telegram_channel_username: discoveredChannelUsername || metadata.telegram_channel_username || null, telegram_channel_type: discoveredChannelType || metadata.telegram_channel_type || null, telegram_invite_link_status: 'failed', telegram_setup_error: String(error.message).slice(0, 300) });
     await recordOperationalEvent(root, { category: 'telegram-setup', summary: 'Could not create custom bot/channel invite link', workspaceId, details: { channel_id: channel, error: error.message } });
     return { status: 'failed', error: error.message };
   }
