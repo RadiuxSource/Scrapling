@@ -348,6 +348,8 @@ The API is intended to be used by the Vortex frontend. Data-bearing API routes u
 - **Phase 6:** crawl task history/results are now persisted in each workspace's `logs/crawl-tasks.json` using atomic file replacement. After a restart, completed/failed task results remain available to that same browser; a task that was still running is marked failed with a clear restart message rather than remaining stuck forever. The crawl itself is not resumed after restart; the independent nonstop download queue recovery remains unchanged.
 - Telegram bot token and API hash remain masked in settings responses. Saving unrelated settings with blank masked-secret fields now preserves the workspace's existing credentials instead of accidentally erasing them.
 - **Phase 7 implemented (11/11):** added `Cache-Control: private, no-store, max-age=0`, `Pragma: no-cache`, and `Vary: Cookie` to `/api/*` responses so browsers and shared reverse proxies do not reuse private API responses across workspace cookies. This is defense-in-depth; workspace scoping remains the actual access boundary.
+- **Phase 8 audit hardening (11/11):** the downloads listing no longer returns the server's absolute filesystem path; the frontend uses the workspace-scoped filename and streaming/download endpoints instead. Removed the unused `file_path` field from the frontend download type.
+- Hardened video byte-range handling: malformed, negative, empty, and out-of-bounds ranges now receive HTTP 416 with a valid `Content-Range` response; suffix ranges and end positions beyond EOF are handled safely. This prevents malformed playback requests from reaching `createReadStream` with invalid offsets.
 
 
 #### Queue restore timeout and notification visibility
