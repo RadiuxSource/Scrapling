@@ -840,7 +840,20 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
       runtime.currentItem = item;
       queue.current_index++;
       queue.current_title = item.title;
-      void persistNonstopQueueState(workspaceId);
+      await persistNonstopQueueState(workspaceId);
+      if (runtime.lastRemoteSaveAt < runtime.latestQueueMutationAt) {
+        // Do not start the Python downloader until the in-flight item is safely
+        // represented in the remote checkpoint. Put it back so status polling
+        // can retry the backup and resume without losing or duplicating it.
+        queue.pending_items.unshift(item);
+        queue.current_index = Math.max(0, queue.current_index - 1);
+        queue.current_title = '';
+        runtime.currentItem = null;
+        queue.is_running = true;
+        addLog('error', `Download dispatch paused because the in-flight queue checkpoint was not confirmed: ${runtime.lastRemoteSaveError || 'checkpoint not confirmed'}`);
+        await persistNonstopQueueState(workspaceId);
+        return;
+      }
 
       const job_id = `dl_${randomUUID()}`;
       const cleanTitle = item.title || 'video';
@@ -1403,7 +1416,8 @@ app.post('/api/download-all-nonstop', async (req, res) => {
 app.get('/api/nonstop-queue/status', async (_req, res) => {
   const workspaceId = getWorkspaceId();
   await ensureQueueRestored(workspaceId);
-  const queue = getQueueRuntime(workspaceId).state;
+  const runtime = getQueueRuntime(workspaceId);
+  const queue = runtime.state;
   res.json({
     success: true,
     queue: {
