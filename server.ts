@@ -66,6 +66,9 @@ function workspaceStoragePaths(workspaceId = getWorkspaceId()) {
   [paths.downloads, paths.reports, paths.logs, path.join(paths.logs, 'jobs')].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
   return paths;
 }
+function workspaceSettingsFile(workspaceId = getWorkspaceId()) {
+  return path.join(workspaceStoragePaths(workspaceId).root, 'settings.json');
+}
 function getWorkspaceJobs(): Map<string, JobStatus> {
   const workspaceId = getWorkspaceId();
   let jobs = workspaceJobs.get(workspaceId);
@@ -136,8 +139,13 @@ interface CrawlTask {
   result?: any;
   error?: string;
 }
-const crawlTasks = new Map<string, CrawlTask>();
-let activeCrawlTaskId: string | null = null;
+const workspaceCrawlTasks = new Map<string, Map<string, CrawlTask>>();
+const activeCrawlTaskIds = new Map<string, string>();
+function getWorkspaceCrawlTasks(workspaceId = getWorkspaceId()): Map<string, CrawlTask> {
+  let tasks = workspaceCrawlTasks.get(workspaceId);
+  if (!tasks) { tasks = new Map<string, CrawlTask>(); workspaceCrawlTasks.set(workspaceId, tasks); }
+  return tasks;
+}
 
 
 function addLog(level: 'info' | 'warn' | 'error', message: string) {
@@ -274,7 +282,15 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<a
     const storage = workspaceStoragePaths(getWorkspaceId());
     const proc = spawn('python3', ['-m', 'engine.runner', action], {
       cwd: ROOT_DIR, stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, SCRAPLING_DOWNLOADS_DIR: storage.downloads, SCRAPLING_REPORTS_DIR: storage.reports, SCRAPLING_LOGS_DIR: storage.logs, SCRAPLING_SETTINGS_FILE: SETTINGS_FILE },
+      env: {
+        ...process.env,
+        SCRAPLING_DOWNLOADS_DIR: storage.downloads,
+        SCRAPLING_REPORTS_DIR: storage.reports,
+        SCRAPLING_LOGS_DIR: storage.logs,
+        SCRAPLING_SETTINGS_FILE: workspaceSettingsFile(getWorkspaceId()),
+        TELEGRAM_BOT_TOKEN: '', TELEGRAM_CHAT_ID: '', TELEGRAM_API_ID: '',
+        TELEGRAM_API_HASH: '', TELEGRAM_THREAD_ID: '', AUTO_UPLOAD_TELEGRAM: 'false',
+      },
     });
 
     const runId = `${action}_${Date.now()}_${Math.random()}`;
@@ -703,19 +719,20 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
 app.get('/api/settings', (req, res) => {
   try {
     let settings = {
-      telegram_bot_token: process.env.TELEGRAM_BOT_TOKEN || '',
-      telegram_chat_id: process.env.TELEGRAM_CHAT_ID || '',
-      telegram_api_id: process.env.TELEGRAM_API_ID || '',
-      telegram_api_hash: process.env.TELEGRAM_API_HASH || '',
-      telegram_thread_id: process.env.TELEGRAM_THREAD_ID || '',
-      auto_upload_telegram: process.env.AUTO_UPLOAD_TELEGRAM === 'true',
+      telegram_bot_token: '',
+      telegram_chat_id: '',
+      telegram_api_id: '',
+      telegram_api_hash: '',
+      telegram_thread_id: '',
+      auto_upload_telegram: false,
       max_concurrent_downloads: 3,
       max_crawl_videos: 40,
       default_resolution: 'best',
     };
 
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const fileData = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+    const settingsFile = workspaceSettingsFile();
+    if (fs.existsSync(settingsFile)) {
+      const fileData = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
       settings = { ...settings, ...fileData };
     }
     const safeSettings = {
@@ -737,21 +754,20 @@ app.post('/api/settings', (req, res) => {
   try {
     const newSettings = { ...(req.body || {}) };
 
-delete newSettings.telegram_bot_token;
-delete newSettings.telegram_api_hash;
-    let current = {};
-    if (fs.existsSync(SETTINGS_FILE)) {
-      current = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+    let current: any = {};
+    const settingsFile = workspaceSettingsFile();
+    if (fs.existsSync(settingsFile)) {
+      current = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     }
     const merged = { ...current, ...newSettings };
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2));
+    fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2));
     addLog('info', 'Updated configuration settings');
    const safeSettings = {
   ...merged,
   telegram_bot_token: '',
   telegram_api_hash: '',
   telegram_credentials_configured: Boolean(
-    process.env.TELEGRAM_BOT_TOKEN || merged.telegram_bot_token
+    merged.telegram_bot_token && merged.telegram_chat_id
   )
 };
 
@@ -794,21 +810,24 @@ app.post('/api/scrape', (req, res) => {
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ success: false, error: 'A list of URLs is required' });
   }
+  const workspaceId = getWorkspaceId();
+  const crawlTasks = getWorkspaceCrawlTasks(workspaceId);
+  const activeCrawlTaskId = activeCrawlTaskIds.get(workspaceId);
   if (activeCrawlTaskId) {
     const active = crawlTasks.get(activeCrawlTaskId);
     if (active?.status === 'running') {
-      return res.status(409).json({ success: false, error: 'A crawl is already running. Wait for it to finish before starting another URL.' });
+      return res.status(409).json({ success: false, error: 'A crawl is already running in this browser workspace. Wait for it to finish before starting another URL.' });
     }
-    activeCrawlTaskId = null;
+    activeCrawlTaskIds.delete(workspaceId);
   }
   const cleanUrls = urls.filter((u: any) => typeof u === 'string' && u.trim()).map((u: string) => u.trim());
   if (!cleanUrls.length) return res.status(400).json({ success: false, error: 'A valid URL is required' });
 
   for (const u of cleanUrls) registerParsedLink(u);
-  const taskId = `crawl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const taskId = `crawl_${randomUUID()}`;
   const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now() };
   crawlTasks.set(taskId, task);
-  activeCrawlTaskId = taskId;
+  activeCrawlTaskIds.set(workspaceId, taskId);
   addLog('info', `Queued background crawl [${taskId}] for ${cleanUrls.length} URL(s)`);
   res.status(202).json({ success: true, task_id: taskId, status: 'running' });
 
@@ -830,7 +849,7 @@ app.post('/api/scrape', (req, res) => {
       task.finished_at = Date.now();
       addLog('error', `Background crawl [${taskId}] failed: ${task.error}`);
     } finally {
-      if (activeCrawlTaskId === taskId) activeCrawlTaskId = null;
+      if (activeCrawlTaskIds.get(workspaceId) === taskId) activeCrawlTaskIds.delete(workspaceId);
       const expiry = Date.now() - 30 * 60 * 1000;
       for (const [id, oldTask] of crawlTasks.entries()) {
         if (oldTask.finished_at && oldTask.finished_at < expiry) crawlTasks.delete(id);
@@ -840,7 +859,7 @@ app.post('/api/scrape', (req, res) => {
 });
 
 app.get('/api/scrape/status/:id', (req, res) => {
-  const task = crawlTasks.get(req.params.id);
+  const task = getWorkspaceCrawlTasks().get(req.params.id);
   if (!task) return res.status(404).json({ success: false, error: 'Crawl task not found or server restarted.' });
   res.json({ success: true, task_id: task.task_id, status: task.status,
     result: task.status === 'completed' ? task.result : undefined,
@@ -1329,9 +1348,10 @@ app.post('/api/telegram/upload', async (req, res) => {
 
   // Load configured settings
   let settings: any = {};
-  if (fs.existsSync(SETTINGS_FILE)) {
+  const settingsFile = workspaceSettingsFile();
+  if (fs.existsSync(settingsFile)) {
     try {
-      settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     } catch {}
   }
 
