@@ -218,7 +218,7 @@ function loadWorkspaceSummary(root: string, id: string) {
       telegram_bot_token_masked: mask(settings.telegram_bot_token || ''),
       telegram_chat_id: settings.telegram_chat_id || null,
       effective_bot_source: settings.telegram_bot_token && settings.telegram_chat_id ? 'custom' : 'deployment_default',
-      effective_channel_id: settings.telegram_chat_id || LOG_CHAT_ID || null,
+      effective_channel_id: settings.telegram_chat_id || process.env.TELEGRAM_BACKUP_CHAT_ID || LOG_CHAT_ID || process.env.TELEGRAM_CHAT_ID || null,
       telegram_channel_title: metadata.telegram_channel_title || null,
       telegram_channel_username: metadata.telegram_channel_username || null,
       telegram_channel_type: metadata.telegram_channel_type || null,
