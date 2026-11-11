@@ -1360,7 +1360,7 @@ class MediaInspector:
             # development environments where it may not be present.
             "remote_components": ["ejs:github"],
         }
-        deno_path = shutil.which("deno")
+        cookie_file = os.environ.get("YTDLP_COOKIES_FILE")\n        if cookie_file and Path(cookie_file).is_file():\n            ydl_options["cookiefile"] = cookie_file\n        deno_path = shutil.which("deno")
         if deno_path:
             ydl_options["js_runtimes"] = {"deno": {"path": deno_path}}
 

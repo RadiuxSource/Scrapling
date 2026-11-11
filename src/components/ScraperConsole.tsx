@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState } from 'react';\nimport { BrowserSessionPanel } from './BrowserSessionPanel';
 import {
   Search,
   Play,
@@ -162,7 +162,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   });
 
   return (
-    <div className="vortex-view vortex-view-console space-y-6">
+    <div className="vortex-view vortex-view-console space-y-6">\n      <BrowserSessionPanel />
       {crawlRecovery && (
         <div className="rounded-xl border border-[var(--vortex-border)] bg-[var(--vortex-surface)] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3" role="status">
           <div className="flex items-start gap-3 min-w-0">
