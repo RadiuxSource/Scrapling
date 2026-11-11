@@ -203,8 +203,9 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   const command = (rawText.split(/\s+/, 1)[0] || '').split('@')[0].toLowerCase();
   const args = rawText.split(/\s+/).slice(1);
   const chatId = message.chat?.id;
-  const threadId = Number(message.message_thread_id || logThreadId || 0) || undefined;
-  if (!chatId || !LOG_CHAT_ID || String(chatId) !== LOG_CHAT_ID) return;
+  const isLogGroup = Boolean(LOG_CHAT_ID && String(chatId) === LOG_CHAT_ID);
+  const threadId = Number(message.message_thread_id || (isLogGroup ? logThreadId : 0) || 0) || undefined;
+  if (!chatId) return;
   const uptimeSeconds = Math.floor(process.uptime());
   const uptime = [Math.floor(uptimeSeconds / 86400) + 'd', Math.floor((uptimeSeconds % 86400) / 3600) + 'h', Math.floor((uptimeSeconds % 3600) / 60) + 'm', (uptimeSeconds % 60) + 's'].join(' ');
   const sendReply = (reply: string) => telegram('sendMessage', { chat_id: chatId, text: reply, ...(threadId ? { message_thread_id: threadId } : {}) });
@@ -217,6 +218,7 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
     return;
   }
   if (command === '/logs') {
+    if (!isLogGroup) { await sendReply('For /logs, reply to an action message in the configured operational log group.'); return; }
     const replyId = message.reply_to_message?.message_id;
     if (!replyId) { await telegram('sendMessage', { chat_id: chatId, text: 'Reply to an action start/end message with /logs to receive its .txt log.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const item = safeJson(messageIndexFile(root), {})[String(replyId)];
