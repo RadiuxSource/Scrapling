@@ -184,7 +184,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
               </p>
             </div>
           </div>
-          {crawlRecovery.status === 'failed' && crawlRecovery.request?.urls?.length > 0 && (
+          {crawlRecovery.status === 'failed' && Boolean(crawlRecovery.request?.urls?.length) && (
             <button
               type="button"
               onClick={onResumeCrawl}
