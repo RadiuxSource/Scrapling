@@ -653,7 +653,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
     }
     clearTimeout(restoreTimeout);
 
-    if (!saved && runtime.restoreStatus !== 'cancelled') {
+    if (!saved && (runtime.restoreStatus as QueueRestoreStatus) !== 'cancelled') {
       try {
         const checkpoint = queueCheckpointPath(workspaceId);
         if (fs.existsSync(checkpoint)) {
