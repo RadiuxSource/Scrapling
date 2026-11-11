@@ -192,9 +192,41 @@ interface CrawlTask {
   request?: { urls: string[]; deep_crawl: boolean; max_subpages: number; subpage_offset: number };
   result?: any;
   error?: string;
+  resumed_from?: string;
 }
 const workspaceCrawlTasks = new Map<string, Map<string, CrawlTask>>();
 const activeCrawlTaskIds = new Map<string, string>();
+function resumeCrawlForWorkspace(workspaceId: string, previousTaskId: string) {
+  const tasks = getWorkspaceCrawlTasks(workspaceId);
+  const previous = tasks.get(previousTaskId);
+  if (!previous) throw new Error('Crawl task not found in this browser workspace.');
+  if (!previous.request || !Array.isArray(previous.request.urls) || !previous.request.urls.length) throw new Error('This crawl has no saved request and cannot be resumed.');
+  const activeId = activeCrawlTaskIds.get(workspaceId);
+  if (activeId && tasks.get(activeId)?.status === 'running') throw new Error('A crawl is already running in this browser workspace.');
+  const taskId = 'crawl_' + randomUUID();
+  const crawlRequest = { ...previous.request, urls: [...previous.request.urls] };
+  const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now(), request: crawlRequest, resumed_from: previous.task_id };
+  tasks.set(taskId, task);
+  activeCrawlTaskIds.set(workspaceId, taskId);
+  persistWorkspaceCrawlTasks(workspaceId);
+  void workspaceContext.run(workspaceId, async () => {
+    void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Saved crawl request replay started', workspaceId, actionId: taskId, phase: 'start', details: { task_id: taskId, resumed_from: previous.task_id, urls: crawlRequest.urls.join(', '), recovery: 'Request replay; exact in-memory crawler position is not available.' } });
+    try {
+      task.result = await runPythonRunner('scrape-batch', crawlRequest, 0, taskId);
+      task.status = 'completed'; task.finished_at = Date.now();
+      persistWorkspaceCrawlTasks(workspaceId);
+      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl completed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, videos_detected: task.result?.total_videos_detected ?? 0 } });
+    } catch (error: any) {
+      task.status = 'failed'; task.error = error?.message || 'Unknown crawler error'; task.finished_at = Date.now();
+      persistWorkspaceCrawlTasks(workspaceId);
+      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl failed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, error: task.error } });
+    } finally {
+      if (activeCrawlTaskIds.get(workspaceId) === taskId) activeCrawlTaskIds.delete(workspaceId);
+    }
+  });
+  return { task_id: taskId, resumed_from: previous.task_id, status: 'running' };
+}
+
 function crawlTasksFile(workspaceId: string) {
   return path.join(workspaceStoragePaths(workspaceId).logs, 'crawl-tasks.json');
 }
@@ -1005,41 +1037,14 @@ app.post('/api/scrape', (req, res) => {
 });
 
 app.post('/api/scrape/resume/:id', (req, res) => {
-  const workspaceId = getWorkspaceId();
-  const tasks = getWorkspaceCrawlTasks(workspaceId);
-  const previous = tasks.get(req.params.id);
-  if (!previous) return res.status(404).json({ success: false, error: 'Crawl task not found in this browser workspace.' });
-  if (!previous.request || !Array.isArray(previous.request.urls) || !previous.request.urls.length) {
-    return res.status(422).json({ success: false, error: 'This crawl has no saved request and cannot be resumed.' });
+  try {
+    const resumed = resumeCrawlForWorkspace(getWorkspaceId(), req.params.id);
+    addLog('info', 'Resuming saved crawl request ' + req.params.id + ' as ' + resumed.task_id);
+    res.status(202).json({ success: true, ...resumed });
+  } catch (error: any) {
+    const status = /not found/i.test(error.message) ? 404 : 409;
+    res.status(status).json({ success: false, error: error.message });
   }
-  const activeId = activeCrawlTaskIds.get(workspaceId);
-  if (activeId && tasks.get(activeId)?.status === 'running') {
-    return res.status(409).json({ success: false, error: 'A crawl is already running in this browser workspace.' });
-  }
-  const taskId = 'crawl_' + randomUUID();
-  const crawlRequest = { ...previous.request, urls: [...previous.request.urls] };
-  const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now(), request: crawlRequest };
-  (task as any).resumed_from = previous.task_id;
-  tasks.set(taskId, task);
-  activeCrawlTaskIds.set(workspaceId, taskId);
-  persistWorkspaceCrawlTasks(workspaceId);
-  addLog('info', 'Resuming crawl request ' + previous.task_id + ' as ' + taskId + '; the crawler restarts the saved request rather than restoring Python memory.');
-  void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Owner/browser resumed a saved crawl request', workspaceId, actionId: taskId, phase: 'start', details: { task_id: taskId, resumed_from: previous.task_id, urls: crawlRequest.urls.join(', '), note: 'Request replay; exact in-memory crawler position is not available.' } });
-  res.status(202).json({ success: true, task_id: taskId, status: 'running', resumed_from: previous.task_id });
-  void (async () => {
-    try {
-      task.result = await runPythonRunner('scrape-batch', crawlRequest, 0, taskId);
-      task.status = 'completed'; task.finished_at = Date.now();
-      persistWorkspaceCrawlTasks(workspaceId);
-      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl completed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, videos_detected: task.result?.total_videos_detected ?? 0 } });
-    } catch (error: any) {
-      task.status = 'failed'; task.error = error?.message || 'Unknown crawler error'; task.finished_at = Date.now();
-      persistWorkspaceCrawlTasks(workspaceId);
-      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl failed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, error: task.error } });
-    } finally {
-      if (activeCrawlTaskIds.get(workspaceId) === taskId) activeCrawlTaskIds.delete(workspaceId);
-    }
-  })();
 });
 
 app.get('/api/scrape/tasks', (_req, res) => {
@@ -1753,6 +1758,7 @@ initializeOwnerMonitoring(app, {
     const dir = path.join(ROOT_DIR, 'data', 'workspaces');
     return fs.existsSync(dir) ? fs.readdirSync(dir).filter((id) => /^[0-9a-f-]{36}$/i.test(id) && fs.statSync(path.join(dir, id)).isDirectory()) : [];
   },
+  resumeCrawl: (workspaceId, taskId) => resumeCrawlForWorkspace(workspaceId, taskId),
   stopWorkspace: (workspaceId) => {
     const entries = Array.from(activeProcesses.values()).filter((entry) => entry.workspaceId === workspaceId);
     entries.forEach((entry) => terminateProcessEntry(entry));

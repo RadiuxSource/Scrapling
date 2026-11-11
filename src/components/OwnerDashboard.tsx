@@ -46,6 +46,13 @@ export const OwnerDashboard: React.FC = () => {
     if (!response.ok || !data.success) { setError(data.error || 'Workspace not found.'); return; }
     setSelected(data.workspace);
   };
+  const resumeCrawl = async (browserId: string, taskId: string) => {
+    const response = await fetch('/api/owner/workspaces/' + encodeURIComponent(browserId) + '/crawls/' + encodeURIComponent(taskId) + '/resume', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.success) { setError(data.error || 'Could not resume crawl.'); return; }
+    setError('Crawl request replay started as ' + data.task_id);
+    await refresh(); await openWorkspace(browserId);
+  };
   const stopWorkspace = async (id: string) => {
     if (!window.confirm('Stop active engine processes and pause this browser workspace queue?')) return;
     const response = await fetch('/api/owner/workspaces/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
@@ -111,7 +118,9 @@ export const OwnerDashboard: React.FC = () => {
               <h3>Workspace</h3><dl><dt>Created</dt><dd>{selected.created_at ? new Date(selected.created_at).toLocaleString() : 'Unknown'}</dd><dt>Last seen</dt><dd>{selected.last_seen_at ? new Date(selected.last_seen_at).toLocaleString() : 'Unknown'}</dd><dt>Workspace key</dt><dd>{selected.workspace_id}</dd></dl>
               <h3>Queue checkpoint</h3><pre>{JSON.stringify(selected.activity.queue || { status: 'No checkpoint found' }, null, 2)}</pre>
               <h3>Telegram configuration (secrets masked)</h3><pre>{JSON.stringify(selected.settings, null, 2)}</pre>
-              <h3>Recent crawls and downloads</h3><pre>{JSON.stringify({ crawls: selected.activity.recent_crawls, jobs: selected.activity.recent_jobs }, null, 2)}</pre>
+              <h3>Recent crawls</h3>
+              <div className="owner-crawl-list">{(selected.activity.recent_crawls || []).map((crawl: any) => <div className="owner-crawl-row" key={crawl.task_id}><div><strong>{crawl.task_id}</strong><span>{crawl.status} · {crawl.request?.urls?.join(', ') || 'No saved request'}</span></div>{crawl.status !== 'running' && crawl.request?.urls?.length > 0 && <button onClick={() => void resumeCrawl(selected.browser_id, crawl.task_id)}>Replay request</button>}</div>)}</div>
+              <h3>Recent downloads</h3><pre>{JSON.stringify(selected.activity.recent_jobs, null, 2)}</pre>
               <h3>Recent errors</h3><pre>{JSON.stringify(selected.activity.errors, null, 2)}</pre>
               <h3>Recent engine logs</h3><pre>{(selected.activity.recent_logs || []).map((line: any) => '[' + line.timestamp + '] ' + line.level.toUpperCase() + ' ' + line.message).join('\n') || 'No persisted engine logs yet.'}</pre>
               <p className="owner-muted">Files: {selected.activity.downloads} downloads · {selected.activity.reports} reports</p>

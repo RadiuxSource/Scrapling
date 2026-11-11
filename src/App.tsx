@@ -456,14 +456,16 @@ function WorkspaceApp() {
     }
   };
 
-  const handleResumeLastCrawl = () => {
-    const request = crawlRecovery?.request;
-    if (!request?.urls?.length || crawlRecovery.status === 'running') return;
-    setUrlsInput(request.urls.join('\n'));
-    setDeepCrawl(request.deep_crawl !== false);
-    setMaxCrawlVideos(request.max_subpages);
-    setCrawlRecovery(null);
-    void handleStartScraping(request.subpage_offset || 0, request.max_subpages, false, request);
+  const handleResumeLastCrawl = async () => {
+    if (!crawlRecovery?.task_id || crawlRecovery.status === 'running') return;
+    try {
+      const response = await fetch('/api/scrape/resume/' + encodeURIComponent(crawlRecovery.task_id), { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Could not resume the saved crawl.');
+      setIsScraping(true); setOperationError('');
+      setOperationMessage('Replaying the saved crawl request…');
+      setCrawlRecovery({ ...crawlRecovery, task_id: data.task_id, status: 'running', resumed_from: data.resumed_from });
+    } catch (error: any) { setOperationError(error.message); }
   };
 
   // Dedicated "Load Next 100 Videos" action

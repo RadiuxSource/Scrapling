@@ -7,6 +7,7 @@ type OwnerOptions = {
   rootDir: string;
   getWorkspaceIds: () => string[];
   stopWorkspace: (workspaceId: string) => { stopped: number; details: string[] };
+  resumeCrawl: (workspaceId: string, taskId: string) => { task_id: string; resumed_from: string; status: string };
 };
 
 const COOKIE = 'vortex_owner';
@@ -265,6 +266,12 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
     if (!id) return res.status(404).json({ success: false, error: 'Browser workspace not found.' });
     res.json({ success: true, workspace: loadWorkspaceSummary(options.rootDir, id) });
+  });
+  app.post('/api/owner/workspaces/:browserId/crawls/:taskId/resume', ownerMiddleware, (req: Request, res: Response) => {
+    const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
+    if (!id) return res.status(404).json({ success: false, error: 'Browser workspace not found.' });
+    try { res.status(202).json({ success: true, ...options.resumeCrawl(id, req.params.taskId) }); }
+    catch (error: any) { res.status(/not found/i.test(error.message) ? 404 : 409).json({ success: false, error: error.message }); }
   });
   app.post('/api/owner/workspaces/:browserId/stop', ownerMiddleware, (req: Request, res: Response) => {
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
