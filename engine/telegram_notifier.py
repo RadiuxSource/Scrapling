@@ -9,7 +9,7 @@ import subprocess
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from .config import load_settings
+from .config import load_settings, resolve_telegram_delivery
 
 logger = logging.getLogger("telegram_notifier")
 
@@ -28,10 +28,12 @@ class TelegramNotifier:
         api_hash: Optional[str] = None,
     ):
         settings = load_settings()
-        self.bot_token = (bot_token or settings.get("telegram_bot_token") or "").strip()
-        self.chat_id = (chat_id or settings.get("telegram_chat_id") or "").strip()
-        self.api_id = (api_id or settings.get("telegram_api_id") or "").strip()
-        self.api_hash = (api_hash or settings.get("telegram_api_hash") or "").strip()
+        delivery = resolve_telegram_delivery(settings, bot_token=bot_token, chat_id=chat_id)
+        self.bot_token = delivery["bot_token"]
+        self.chat_id = delivery["chat_id"]
+        self.delivery_source = delivery["source"]
+        self.api_id = (api_id or delivery.get("api_id") or "").strip()
+        self.api_hash = (api_hash or delivery.get("api_hash") or "").strip()
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=2)

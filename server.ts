@@ -380,6 +380,8 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0, actionLogI
         SCRAPLING_SETTINGS_FILE: workspaceSettingsFile(getWorkspaceId()),
         TELEGRAM_BOT_TOKEN: '', TELEGRAM_CHAT_ID: '', TELEGRAM_API_ID: '',
         TELEGRAM_API_HASH: '', TELEGRAM_THREAD_ID: '', AUTO_UPLOAD_TELEGRAM: 'false',
+        LOG_TELEGRAM_BOT_TOKEN: process.env.LOG_TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '',
+        LOG_TELEGRAM_CHAT_ID: process.env.LOG_TELEGRAM_CHAT_ID || '',
       },
     });
 

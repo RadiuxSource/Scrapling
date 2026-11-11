@@ -53,3 +53,23 @@ def save_settings(new_settings: dict) -> dict:
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(current, f, indent=2)
     return current
+
+
+def resolve_telegram_delivery(settings=None, bot_token=None, chat_id=None):
+    """Resolve the documented per-workspace bot/channel fallback matrix.
+
+    Complete custom pairs win. A custom channel without a custom token uses
+    the deployment default bot. An incomplete custom bot is ignored and uses
+    both deployment defaults. Raw credentials remain server-side.
+    """
+    settings = settings or load_settings()
+    custom_bot = str(bot_token or settings.get("telegram_bot_token") or "").strip()
+    custom_chat = str(chat_id or settings.get("telegram_chat_id") or "").strip()
+    default_bot = str(os.getenv("LOG_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    default_chat = str(os.getenv("LOG_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+    if custom_bot and custom_chat:
+        return {"bot_token": custom_bot, "chat_id": custom_chat, "source": "custom", "api_id": settings.get("telegram_api_id", ""), "api_hash": settings.get("telegram_api_hash", "")}
+    if custom_chat:
+        return {"bot_token": default_bot, "chat_id": custom_chat, "source": "default_bot_custom_channel", "api_id": "", "api_hash": ""}
+    return {"bot_token": default_bot, "chat_id": default_chat, "source": "deployment_default", "api_id": "", "api_hash": ""}

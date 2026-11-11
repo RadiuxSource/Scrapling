@@ -22,13 +22,9 @@ def handle_test_website(url: str, custom_token: str = None, custom_chat_id: str 
     inspector = MediaInspector()
     report = inspector.inspect_url(url, deep_crawl=True, max_subpages=max_subpages, subpage_offset=subpage_offset)
 
-    settings = load_settings()
-    token = custom_token or settings.get("telegram_bot_token")
-    chat_id = custom_chat_id or settings.get("telegram_chat_id")
-
+    tg = TelegramNotifier(custom_token, custom_chat_id)
     tg_result = {"skipped": True, "reason": "No Telegram credentials configured"}
-    if token and chat_id:
-        tg = TelegramNotifier(token, chat_id)
+    if tg.is_configured():
         sample = report["videos"][0]["title"] if report["videos"] else None
         count_to_report = len(report["videos"]) if len(report["videos"]) > 0 else report.get("subpages_discovered", 0)
         tg_result = tg.send_test_success_notification(
