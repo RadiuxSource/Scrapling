@@ -72,7 +72,6 @@ export interface NonstopQueueStatus {
 
 export interface DownloadedFile {
   filename: string;
-  file_path: string;
   size_bytes: number;
   size_mb: string;
   created_at: string;
