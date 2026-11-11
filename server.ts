@@ -130,6 +130,15 @@ app.use((req, res, next) => {
   workspaceContext.run(workspaceId, next);
 });
 
+// Workspace API responses contain private user data. Prevent browsers and
+// shared reverse-proxy caches from reusing one workspace's response for another.
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.vary('Cookie');
+  next();
+});
+
 interface CrawlTask {
   task_id: string;
   status: 'running' | 'completed' | 'failed';
