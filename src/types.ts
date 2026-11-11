@@ -90,6 +90,7 @@ export interface Settings {
   telegram_chat_id: string;
   telegram_api_id?: string;
   telegram_api_hash?: string;
+  telegram_credentials_configured?: boolean;
   telegram_thread_id?: string;
   auto_upload_telegram: boolean;
   max_concurrent_downloads: number;
