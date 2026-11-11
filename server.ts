@@ -602,13 +602,14 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
   const runtime = getQueueRuntime(workspaceId);
   if (runtime.restoreStatus === 'success' || runtime.restoreStatus === 'error' || runtime.restoreStatus === 'cancelled') return;
   if (runtime.restorePromise) return runtime.restorePromise;
+  let restoreTimeout: ReturnType<typeof setTimeout> | undefined;
   runtime.restorePromise = (async () => {
     let saved: any = null;
     const config = getSupabaseQueueConfig();
     runtime.restoreController = new AbortController();
     runtime.restoreStatus = 'restoring';
     runtime.restoreMessage = 'Restoring your private queue from the database, please wait…';
-    const restoreTimeout = setTimeout(() => {
+    restoreTimeout = setTimeout(() => {
       if (runtime.restoreStatus === 'restoring') runtime.restoreController?.abort();
     }, 12_000);
 
@@ -663,6 +664,9 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
       runtime.currentItem = null;
       runtime.state.is_running = runtime.state.pending_items.length > 0;
       if (runtime.state.pending_items.length) addLog('warn', `Recovered ${runtime.state.pending_items.length} unfinished download(s) for this browser workspace; automatic resume is enabled.`);
+      // A local checkpoint is still a valid recovery source when Supabase is
+      // temporarily unavailable or not configured.
+      runtime.restoreStatus = 'success';
     }
     if (runtime.restoreStatus !== 'error') {
       runtime.restoreStatus = 'success';
@@ -672,7 +676,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
       runtime.restoreNoticeUntil = Date.now() + 45_000;
     }
   })().finally(() => {
-    clearTimeout((runtime as any).restoreTimeout);
+    if (restoreTimeout) clearTimeout(restoreTimeout);
     runtime.restoreController = null;
     runtime.restorePromise = null;
   });
