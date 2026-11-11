@@ -16,13 +16,16 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+# Telegram credentials are deliberately workspace-scoped in settings.json.
+# Do not inherit deployment-wide Telegram secrets as defaults: that would make
+# every anonymous browser share the same delivery destination.
 DEFAULT_SETTINGS = {
-    "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
-    "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
-    "telegram_api_id": os.getenv("TELEGRAM_API_ID", ""),
-    "telegram_api_hash": os.getenv("TELEGRAM_API_HASH", ""),
-    "telegram_thread_id": os.getenv("TELEGRAM_THREAD_ID", ""),
-    "auto_upload_telegram": os.getenv("AUTO_UPLOAD_TELEGRAM", "true").lower() in ("true", "1", "yes"),
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "telegram_api_id": "",
+    "telegram_api_hash": "",
+    "telegram_thread_id": "",
+    "auto_upload_telegram": False,
     "max_concurrent_downloads": 3,
     "crawl_depth": 1,
     "max_crawl_videos": 40,
