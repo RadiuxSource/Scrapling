@@ -991,117 +991,107 @@ app.post('/api/download', async (req, res) => {
   res.json({ success: true, job_id, job });
 });
 
+// Queue restore controls are scoped to the signed browser workspace.
+app.get('/api/nonstop-queue/restore-status', async (_req, res) => {
+  const workspaceId = getWorkspaceId();
+  await ensureQueueRestored(workspaceId);
+  const runtime = getQueueRuntime(workspaceId);
+  if (runtime.restoreNoticeUntil && Date.now() > runtime.restoreNoticeUntil) {
+    runtime.restoreStatus = 'idle';
+    runtime.restoreMessage = '';
+    runtime.restoreNoticeUntil = 0;
+  }
+  res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
+});
+
+app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
+  const runtime = getQueueRuntime();
+  if (runtime.restoreStatus !== 'restoring') {
+    return res.json({ success: false, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
+  }
+  runtime.restoreStatus = 'cancelled';
+  runtime.restoreMessage = 'Queue restoration cancelled.';
+  runtime.restoreController?.abort();
+  runtime.restoreNoticeUntil = Date.now() + 45_000;
+  addLog('warn', runtime.restoreMessage);
+  res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
+});
+
 // 4b. Download All Nonstop Queue
 app.post('/api/download-all-nonstop', async (req, res) => {
   const { videos } = req.body;
   if (!Array.isArray(videos) || videos.length === 0) {
     return res.status(400).json({ success: false, error: 'Videos array is required' });
   }
-
+  const workspaceId = getWorkspaceId();
+  await ensureQueueRestored(workspaceId);
+  const runtime = getQueueRuntime(workspaceId);
+  const queue = runtime.state;
   const newItems: QueueItem[] = videos.map((v: any) => ({
     media_url: v.media_url,
     title: v.title,
     format_id: v.selected_format_id || v.format_id || 'best',
-  }));
+  })).filter((item: QueueItem) => typeof item.media_url === 'string' && item.media_url.trim());
+  if (!newItems.length) return res.status(400).json({ success: false, error: 'No valid video URLs were supplied' });
 
-  nonstopQueue.pending_items.push(...newItems);
-  nonstopQueue.total_items += newItems.length;
-  nonstopQueue.is_running = true;
-  await persistNonstopQueueState();
-
-  addLog('info', `Enqueued ${newItems.length} videos into Nonstop Download Queue (Total items: ${nonstopQueue.total_items})`);
-
-  if (nonstopQueue.is_running && !currentNonstopItem) {
-    void processNextNonstopItem();
-  }
+  queue.pending_items.push(...newItems);
+  queue.total_items += newItems.length;
+  queue.is_running = true;
+  await persistNonstopQueueState(workspaceId);
+  addLog('info', `Enqueued ${newItems.length} videos into this browser's private queue (Total items: ${queue.total_items})`);
+  if (!runtime.currentItem) void processNextNonstopItem(workspaceId);
 
   res.json({
     success: true,
-    message: `Started nonstop downloading of ${newItems.length} video(s)`,
+    message: `Started downloading ${newItems.length} video(s) in your private queue`,
+    queue: { total: queue.total_items, current: queue.current_index, pending: queue.pending_items.length, is_running: queue.is_running },
+  });
+});
+
+app.get('/api/nonstop-queue/status', async (_req, res) => {
+  const workspaceId = getWorkspaceId();
+  await ensureQueueRestored(workspaceId);
+  const queue = getQueueRuntime(workspaceId).state;
+  res.json({
+    success: true,
     queue: {
-      total: nonstopQueue.total_items,
-      current: nonstopQueue.current_index,
-      pending: nonstopQueue.pending_items.length,
-      is_running: nonstopQueue.is_running,
+      is_running: queue.is_running,
+      total_items: queue.total_items,
+      current_index: queue.current_index,
+      current_title: queue.current_title,
+      completed_count: queue.completed_count,
+      failed_count: queue.failed_count,
+      pending_count: queue.pending_items.length,
     },
   });
 });
 
-app.get('/api/nonstop-queue/status', (req, res) => {
-  res.json({
-    success: true,
-    queue: {
-      is_running: nonstopQueue.is_running,
-      total_items: nonstopQueue.total_items,
-      current_index: nonstopQueue.current_index,
-      current_title: nonstopQueue.current_title,
-      completed_count: nonstopQueue.completed_count,
-      failed_count: nonstopQueue.failed_count,
-      pending_count: nonstopQueue.pending_items.length,
-    },
-  });
-});
+app.post('/api/nonstop-queue/stop', async (_req, res) => {
+  const workspaceId = getWorkspaceId();
+  const runtime = getQueueRuntime(workspaceId);
+  const queue = runtime.state;
+  queue.is_running = false;
+  queue.pending_items = [];
+  runtime.currentItem = null;
+  queue.current_title = '';
+  await persistNonstopQueueState(workspaceId);
 
-app.post('/api/nonstop-queue/stop', async (req, res) => {
-  nonstopQueue.is_running = false;
-  nonstopQueue.pending_items = [];
-  currentNonstopItem = null;
-  nonstopQueue.current_title = '';
-  await persistNonstopQueueState();
-
-  addLog('warn', 'Halt request received: Terminating all active processes immediately...');
-
-  // 1. Terminate all tracked active runner processes
+  addLog('warn', 'Halt request received for this browser workspace; terminating its active download processes.');
   for (const [runId, entry] of activeProcesses.entries()) {
-    addLog('warn', `Forcefully killing active process [${entry.action}] (PID: ${entry.proc?.pid})`);
+    if (entry.workspaceId !== workspaceId) continue;
+    addLog('warn', `Forcefully killing this workspace's active process [${entry.action}] (PID: ${entry.proc?.pid})`);
     terminateProcessEntry(entry);
     activeProcesses.delete(runId);
   }
 
-  // 2. Kill any spawned child processes (FFmpeg, yt-dlp, python engine)
-  try {
-    const killer = spawn('pkill', ['-9', '-f', 'engine.runner|ffmpeg|yt-dlp']);
-
-killer.on('close', () => {
-  addLog('info', 'Subprocess tree termination complete');
-});
-
-killer.on('error', (err) => {
-  addLog('warn', `Could not run pkill: ${err.message}`);
-});
-  } catch (err) {
-    // ignore
-  }
-
-  // 3. Mark all ongoing jobs as canceled
-  for (const [_, job] of getWorkspaceJobs().entries()) {
+  for (const job of getWorkspaceJobs().values()) {
     if (job.status === 'downloading' || job.status === 'processing_ffmpeg' || job.status === 'queued' || job.status === 'starting') {
       job.status = 'failed';
       job.error = 'Operation halted and terminated by user';
       job.finished_at = Date.now();
     }
   }
-
-  // 4. Clean up lingering .part, .tmp, and .ytdl files
-  try {
-    const files = fs.readdirSync(DOWNLOADS_DIR);
-    for (const f of files) {
-      if (f.endsWith('.part') || f.endsWith('.ytdl') || f.includes('.tmp.')) {
-        try {
-          fs.unlinkSync(path.join(DOWNLOADS_DIR, f));
-        } catch {
-          // ignore
-        }
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  res.json({
-    success: true,
-    message: 'Nonstop queue and all active download/conversion processes terminated immediately.'
-  });
+  res.json({ success: true, message: 'Your private nonstop queue and its tracked processes were stopped.' });
 });
 
 // Cancel a specific job
