@@ -374,6 +374,7 @@ The API is intended to be used by the Vortex frontend. Data-bearing API routes u
 - Telegram bot token and API hash remain masked in settings responses. Saving unrelated settings with blank masked-secret fields now preserves the workspace's existing credentials instead of accidentally erasing them.
 - **Phase 7 implemented (11/11):** added `Cache-Control: private, no-store, max-age=0`, `Pragma: no-cache`, and `Vary: Cookie` to `/api/*` responses so browsers and shared reverse proxies do not reuse private API responses across workspace cookies. This is defense-in-depth; workspace scoping remains the actual access boundary.
 - **Phase 8 audit hardening (11/11):** the downloads listing no longer returns the server's absolute filesystem path; the frontend uses the workspace-scoped filename and streaming/download endpoints instead. Removed the unused `file_path` field from the frontend download type.
+- **Final API path audit (11/11):** the reports API now strips `output_path` and `file_path` and reduces `output_file` to a workspace-local filename, preventing absolute server paths from leaking through report JSON while preserving the File Manager's filename matching.
 - Hardened video byte-range handling: malformed, negative, empty, and out-of-bounds ranges now receive HTTP 416 with a valid `Content-Range` response; suffix ranges and end positions beyond EOF are handled safely. This prevents malformed playback requests from reaching `createReadStream` with invalid offsets.
 
 
