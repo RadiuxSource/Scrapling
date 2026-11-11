@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Per-browser runtime state and private local configuration
+data/workspaces/
+settings.json
+
+# Python runtime/cache output
+__pycache__/
+*.py[cod]
+
+# Generated application data
+reports/
+data/legacy-workspace-claimed.json
