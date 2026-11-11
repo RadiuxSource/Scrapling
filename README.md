@@ -474,3 +474,12 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Fixed a production `ReferenceError` in `/api/nonstop-queue/status`: the route now obtains its workspace `QueueRuntime` before reading durable-backup diagnostics. This prevents status polling from terminating the Node process.
 - The queue worker now waits for Supabase confirmation of the in-flight item checkpoint before invoking the Python download runner. If the backup fails, the item is returned to the front of the pending queue and dispatch pauses; later status polling retries the checkpoint and resumes safely after it is confirmed.
 - This prevents a runner from being launched while the durable queue backup is still failing.
+
+
+### 11/11 — Telegram owner start/help and robust queue schema migration
+- Added `/start` with live server status, process uptime, start timestamp, Node.js version, and known browser workspace count.
+- Expanded `/help` with command descriptions, usage, and the required owner/group authorization scope; registered the commands with Telegram so they appear in the bot command menu.
+- Normalized commands such as `/start@BotName` and made command matching exact.
+- Improved startup diagnostics to identify each missing monitoring environment variable, including the required log group ID.
+- Hardened the Supabase schema migration: it discovers and removes any legacy CHECK constraint attached to the queue table's `id` column, rather than assuming the constraint has one particular name.
+- **Action required:** rerun the updated `supabase-queue-schema.sql` in Supabase SQL Editor to remove the existing constraint rejecting `ws_<uuid>` rows.

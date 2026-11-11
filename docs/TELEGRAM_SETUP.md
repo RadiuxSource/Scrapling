@@ -57,7 +57,8 @@ Add the default monitoring bot to the log group as an administrator with permiss
 
 Owner commands (only the configured numeric owner ID is authorized):
 
-- `/help` — command help.
+- `/start` — live status, server uptime, start time, Node version, and known browser count.
+- `/help` — full command guide with usage and access requirements.
 - `/workspaces` — known Browser IDs and activity counts.
 - `/userinfo BRW-XXXXXXXXXX` — detailed sanitized workspace report.
 - `/botinfos` — Telegram configuration inventory, with tokens masked.
@@ -86,7 +87,7 @@ The default bot username is displayed publicly in the Telegram Hub and can also 
    - `LOG_TELEGRAM_CHAT_ID` — the private supergroup ID.
    - `LOG_TELEGRAM_BOT_TOKEN` — the dedicated BotFather token.
    - Leave `LOG_TELEGRAM_THREAD_ID` blank to let Vortex create its own forum topic, or set an existing topic ID.
-5. Keep your existing `WORKSPACE_SECRET`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` unchanged. Do not put any of these secrets in the browser UI or commit them to Git.
-6. Redeploy the service. Open `https://YOUR-DOMAIN/owner` and sign in with `OWNER_ACCESS_SECRET`. In the log group, use `/help`, then reply to an action message with `/logs`.
+5. Keep your existing `WORKSPACE_SECRET`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` unchanged. Also run the latest `supabase-queue-schema.sql` in Supabase SQL Editor; its migration removes legacy CHECK constraints attached to the queue table's `id` column, including renamed constraints that reject `ws_<uuid>` workspace IDs. Do not put any of these secrets in the browser UI or commit them to Git.
+6. Redeploy the service. Open `https://YOUR-DOMAIN/owner` and sign in with `OWNER_ACCESS_SECRET`. In the log group, use `/start` to verify bot connectivity and uptime, `/help` for commands, then reply to an action message with `/logs`.
 
 If you omit `LOG_TELEGRAM_BOT_TOKEN`, Vortex falls back to the deployment's `TELEGRAM_BOT_TOKEN`. This fallback bot must also have no webhook configured for owner commands to work. A dedicated log bot is safer because long polling can conflict with an existing webhook integration.

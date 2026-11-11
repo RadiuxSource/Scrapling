@@ -22,6 +22,14 @@ const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const messageIndexFile = (root: string) => path.join(root, 'data', 'owner-monitoring', 'telegram-message-index.json');
 let polling = false;
 let pollingOffset = 0;
+const commandMenu = [
+  { command: 'start', description: 'Show Vortex status, uptime and command menu' },
+  { command: 'help', description: 'Explain all owner commands' },
+  { command: 'workspaces', description: 'List known browser workspaces' },
+  { command: 'userinfo', description: 'Get details for a Browser ID' },
+  { command: 'botinfos', description: 'Export Telegram bot/channel configuration' },
+  { command: 'logs', description: 'Reply to an action message to download its log' },
+];
 
 function safeJson(file: string, fallback: any = null): any {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : fallback; } catch { return fallback; }
@@ -191,11 +199,24 @@ async function sendDocument(chatId: string | number, file: string, caption: stri
 }
 async function handleOwnerCommand(root: string, message: any, options: OwnerOptions) {
   if (!isOwnerTelegram(message?.from?.id)) return;
-  const text = String(message.text || '').trim();
+  const rawText = String(message.text || '').trim();
+  const command = (rawText.split(/\s+/, 1)[0] || '').split('@')[0].toLowerCase();
+  const args = rawText.split(/\s+/).slice(1);
   const chatId = message.chat?.id;
   const threadId = Number(message.message_thread_id || logThreadId || 0) || undefined;
   if (!chatId || !LOG_CHAT_ID || String(chatId) !== LOG_CHAT_ID) return;
-  if (text.startsWith('/logs')) {
+  const uptimeSeconds = Math.floor(process.uptime());
+  const uptime = [Math.floor(uptimeSeconds / 86400) + 'd', Math.floor((uptimeSeconds % 86400) / 3600) + 'h', Math.floor((uptimeSeconds % 3600) / 60) + 'm', (uptimeSeconds % 60) + 's'].join(' ');
+  const sendReply = (reply: string) => telegram('sendMessage', { chat_id: chatId, text: reply, ...(threadId ? { message_thread_id: threadId } : {}) });
+  if (command === '/start') {
+    await sendReply('VORTEX OWNER MONITORING\\n\\nStatus: Online\\nUptime: ' + uptime + '\\nNode: ' + process.version + '\\nStarted: ' + new Date(Date.now() - process.uptime() * 1000).toISOString() + '\\nKnown browsers: ' + options.getWorkspaceIds().length + '\\nLog destination: connected\\n\\nUse /help to see every command. Owner-only access is enabled.');
+    return;
+  }
+  if (command === '/help') {
+    await sendReply('VORTEX OWNER COMMANDS\\n\\n/start — Show online status, server uptime, start time, Node version and known browser count.\\n/help — Show this command guide.\\n/workspaces — List known Browser IDs, activity status, crawls and download-job counts.\\n/userinfo BRW-XXXXXXXXXX — Receive a detailed workspace report; secrets are masked.\\n/botinfos — Receive the Telegram bot/channel configuration inventory; tokens and API hashes are masked.\\n/logs — Reply directly to a queue/crawl/download action message with /logs to receive its full .txt action log.\\n\\nCommands work only in the configured private log group and only for OWNER_TELEGRAM_USER_ID.');
+    return;
+  }
+  if (command === '/logs') {
     const replyId = message.reply_to_message?.message_id;
     if (!replyId) { await telegram('sendMessage', { chat_id: chatId, text: 'Reply to an action start/end message with /logs to receive its .txt log.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const item = safeJson(messageIndexFile(root), {})[String(replyId)];
@@ -204,8 +225,8 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
     await sendDocument(chatId, file, 'Action log: ' + item.action_id + ' (' + item.phase + ' message)', threadId);
     return;
   }
-  if (text.startsWith('/userinfo')) {
-    const requested = text.split(/\s+/)[1] || '';
+  if (command === '/userinfo') {
+    const requested = args[0] || '';
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === requested.toLowerCase() || x.toLowerCase() === requested.toLowerCase());
     if (!id) { await telegram('sendMessage', { chat_id: chatId, text: 'Browser ID not found. Use /workspaces to list known browsers.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const data = loadWorkspaceSummary(root, id);
@@ -215,7 +236,7 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
     await sendDocument(chatId, file, 'Workspace details for ' + data.browser_id + '. Secrets are masked.', threadId);
     return;
   }
-  if (text.startsWith('/botinfos')) {
+  if (command === '/botinfos') {
     const ids = options.getWorkspaceIds();
     const defaultBot: any = LOG_BOT_TOKEN ? await telegram('getMe', {}).catch(() => null) : null;
     const rows = ids.map(id => loadWorkspaceSummary(root, id)).map(x =>
@@ -232,14 +253,11 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
     await sendDocument(chatId, file, 'Telegram configuration inventory. Credentials are masked.', threadId);
     return;
   }
-  if (text.startsWith('/workspaces')) {
+  if (command === '/workspaces') {
     const rows = options.getWorkspaceIds().map(id => loadWorkspaceSummary(root, id));
     const summary = rows.map(x => x.browser_id + ' — ' + x.status + ' — crawls ' + x.activity.crawl_count + ' — jobs ' + x.activity.download_jobs).join('\n') || 'No browser workspaces yet.';
     await telegram('sendMessage', { chat_id: chatId, text: summary.slice(0, 3900), ...(threadId ? { message_thread_id: threadId } : {}) });
     return;
-  }
-  if (text.startsWith('/help')) {
-    await telegram('sendMessage', { chat_id: chatId, text: '/workspaces — list browser workspaces\n/userinfo <browserid> — detailed workspace report\n/botinfos — Telegram configuration inventory\nReply to an action message with /logs — get its .txt log', ...(threadId ? { message_thread_id: threadId } : {}) });
   }
 }
 async function ensureLogForumTopic(root: string) {
@@ -335,8 +353,9 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     res.json({ success: true, ...options.stopWorkspace(id) });
   });
 
-  if (LOG_BOT_TOKEN && OWNER_TELEGRAM_ID && !polling) {
+  if (LOG_BOT_TOKEN && OWNER_TELEGRAM_ID && LOG_CHAT_ID && !polling) {
     polling = true;
+    void telegram('setMyCommands', { commands: commandMenu }).catch((error: any) => console.warn('[Owner monitoring] Could not publish Telegram command menu:', error.message));
     void (async () => {
       try {
         const webhook: any = await telegram('getWebhookInfo', {});
@@ -368,7 +387,8 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
       }
     })();
   } else {
-    console.warn('[Owner monitoring] Telegram commands disabled until LOG bot token and OWNER_TELEGRAM_USER_ID are configured.');
+    const missing = [!LOG_BOT_TOKEN && 'LOG_TELEGRAM_BOT_TOKEN (or TELEGRAM_BOT_TOKEN)', !OWNER_TELEGRAM_ID && 'OWNER_TELEGRAM_USER_ID', !LOG_CHAT_ID && 'LOG_TELEGRAM_CHAT_ID'].filter(Boolean);
+    console.warn('[Owner monitoring] Telegram commands disabled; missing: ' + (missing.join(', ') || 'polling already started'));
   }
 }
 export function touchWorkspace(root: string, workspaceId: string) {
