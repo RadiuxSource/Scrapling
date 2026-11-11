@@ -1274,6 +1274,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
       job.status = 'failed';
       job.error = 'Operation halted and terminated by user';
       job.finished_at = Date.now();
+      persistWorkspaceJob(job, workspaceId);
     }
   }
   res.json({ success: true, message: 'Your private nonstop queue and its tracked processes were stopped.' });
