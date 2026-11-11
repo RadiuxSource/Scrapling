@@ -338,6 +338,17 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
   if (LOG_BOT_TOKEN && OWNER_TELEGRAM_ID && !polling) {
     polling = true;
     void (async () => {
+      try {
+        const webhook: any = await telegram('getWebhookInfo', {});
+        if (webhook?.url) {
+          const warning = 'Owner commands are not polling because this bot currently has a webhook configured. Use a dedicated LOG_TELEGRAM_BOT_TOKEN with no webhook, or remove the webhook for this bot before using /logs, /userinfo and /botinfos.';
+          console.warn('[Owner monitoring] ' + warning);
+          if (LOG_CHAT_ID) await telegram('sendMessage', { chat_id: LOG_CHAT_ID, text: warning });
+          return;
+        }
+      } catch (error: any) {
+        console.warn('[Owner monitoring] Could not inspect Telegram webhook state:', error.message);
+      }
       while (polling) {
         try {
           const response = await fetch('https://api.telegram.org/bot' + LOG_BOT_TOKEN + '/getUpdates?timeout=25&offset=' + pollingOffset + '&allowed_updates=%5B%22message%22%5D', { signal: AbortSignal.timeout(35000) });
