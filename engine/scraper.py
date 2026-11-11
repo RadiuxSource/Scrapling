@@ -26,10 +26,10 @@ class YtDlpQuietLogger:
         pass
 
     def warning(self, msg):
-        pass
+        logger.warning("yt-dlp probe: %s", msg)
 
     def error(self, msg):
-        pass
+        logger.warning("yt-dlp probe: %s", msg)
 
 
 STREAM_REGEXES = [
@@ -1364,98 +1364,128 @@ class MediaInspector:
             ydl_options["js_runtimes"] = {"deno": {"path": deno_path}}
 
         results = []
-        try:
-            with yt_dlp.YoutubeDL(ydl_options) as ydl:
-                info = ydl.extract_info(target_url, download=False)
-                if not info:
-                    return []
+        parsed_host = (urllib.parse.urlparse(target_url).hostname or "").lower().removeprefix("www.")
+        is_youtube = (
+            parsed_host == "youtu.be"
+            or parsed_host == "youtube.com"
+            or parsed_host.endswith(".youtube.com")
+        )
+        # Match the downloader's YouTube-only public-client fallback and PO
+        # token provider. Non-YouTube extractors still execute exactly once.
+        youtube_clients = (
+            "mweb",
+            "tv",
+            "android_vr",
+            "web_embedded",
+            "web_safari",
+        )
+        attempts = [None] + (list(youtube_clients) if is_youtube else [])
+        last_error = None
 
-                entries = info.get("entries") if "entries" in info else [info]
+        for attempt_index, player_client in enumerate(attempts, start=1):
+            attempt_options = dict(ydl_options)
+            if is_youtube:
+                pot_home = os.environ.get(
+                    "YTDLP_POT_PROVIDER_HOME",
+                    "/opt/bgutil-ytdlp-pot-provider/server",
+                )
+                attempt_options["extractor_args"] = {
+                    "youtube": (
+                        {"player_client": [player_client]} if player_client else {}
+                    ),
+                    "youtube-bgutilscript": {"server_home": [pot_home]},
+                }
+            if player_client:
+                logger.info(
+                    "YouTube metadata probe retry with public player client '%s' (%d/%d).",
+                    player_client,
+                    attempt_index - 1,
+                    len(attempts) - 1,
+                )
 
-                for entry in entries:
-                    if not entry:
-                        continue
+            try:
+                with yt_dlp.YoutubeDL(attempt_options) as ydl:
+                    info = ydl.extract_info(target_url, download=False)
+                if info:
+                    entries = info.get("entries") if "entries" in info else [info]
 
-                    video_id = entry.get("id") or str(
-                        abs(hash(entry.get("webpage_url", target_url))) % 1000000
-                    )
-                    title = entry.get("title") or "Discovered Media Stream"
-                    duration = entry.get("duration")
-                    thumbnail = entry.get("thumbnail")
-                    formats = entry.get("formats", [])
-
-                    format_options = []
-                    best_resolution = None
-                    available_heights = sorted({
-                        int(item.get("height")) for item in formats
-                        if item.get("height") and item.get("vcodec") not in (None, "none")
-                    }, reverse=True)
-                    for requested_height in (2160, 1440, 1080, 720, 480, 360):
-                        if any(height >= requested_height for height in available_heights):
-                            format_options.append({
-                                "format_id": f"height:{requested_height}",
-                                "resolution": f"Up to {requested_height}p",
-                                "ext": "mp4",
-                                "note": f"Up to {requested_height}p",
-                            })
-
-                    for item in formats:
-                        height = item.get("height")
-                        width = item.get("width")
-                        ext = item.get("ext", "mp4")
-                        if not height or item.get("vcodec") in (None, "none") or int(height) < 360:
+                    for entry in entries:
+                        if not entry:
                             continue
-                        format_id = item.get("format_id", "")
-                        video_codec = item.get("vcodec", "none")
-                        audio_codec = item.get("acodec", "none")
-                        filesize = item.get("filesize") or item.get("filesize_approx")
-                        filesize_mb = (
-                            round(filesize / (1024 * 1024), 1)
-                            if filesize else None
-                        )
 
-                        resolution = (
-                            f"{height}p"
-                            if height
-                            else (
-                                f"{width}x{height}"
-                                if width and height else "Auto"
+                        video_id = entry.get("id") or str(
+                            abs(hash(entry.get("webpage_url", target_url))) % 1000000
+                        )
+                        title = entry.get("title") or "Discovered Media Stream"
+                        duration = entry.get("duration")
+                        thumbnail = entry.get("thumbnail")
+                        formats = entry.get("formats", [])
+
+                        format_options = []
+                        best_resolution = None
+                        available_heights = sorted({
+                            int(item.get("height")) for item in formats
+                            if item.get("height") and item.get("vcodec") not in (None, "none")
+                        }, reverse=True)
+                        for requested_height in (2160, 1440, 1080, 720, 480, 360):
+                            if any(height >= requested_height for height in available_heights):
+                                format_options.append({
+                                    "format_id": f"height:{requested_height}",
+                                    "resolution": f"Up to {requested_height}p",
+                                    "ext": "mp4",
+                                    "note": f"Up to {requested_height}p",
+                                })
+
+                        for item in formats:
+                            height = item.get("height")
+                            width = item.get("width")
+                            ext = item.get("ext", "mp4")
+                            if not height or item.get("vcodec") in (None, "none") or int(height) < 360:
+                                continue
+                            format_id = item.get("format_id", "")
+                            video_codec = item.get("vcodec", "none")
+                            audio_codec = item.get("acodec", "none")
+                            filesize = item.get("filesize") or item.get("filesize_approx")
+                            filesize_mb = (
+                                round(filesize / (1024 * 1024), 1)
+                                if filesize else None
                             )
-                        )
 
-                        if height and (
-                            best_resolution is None
-                            or height > int(best_resolution.replace("p", ""))
-                        ):
-                            best_resolution = f"{height}p"
+                            resolution = (
+                                f"{height}p"
+                                if height
+                                else (
+                                    f"{width}x{height}"
+                                    if width and height else "Auto"
+                                )
+                            )
 
-                        if height >= 360:
-                            format_options.append(
-                                {
-                                    "format_id": format_id,
+                            if height and (
+                                best_resolution is None
+                                or height > int(best_resolution.replace("p", ""))
+                            ):
+                                best_resolution = f"{height}p"
+
+                            format_options.append({
+                                "format_id": format_id,
                                 "resolution": resolution,
                                 "ext": ext,
                                 "vcodec": video_codec,
                                 "acodec": audio_codec,
                                 "filesize_mb": filesize_mb,
-                                "note": item.get("format_note")
-                                    or f"{resolution} ({ext})",
-                                }
-                            )
+                                "note": item.get("format_note") or f"{resolution} ({ext})",
+                            })
 
-                    if not format_options:
-                        format_options.append(
-                            {
+                        if not format_options:
+                            format_options.append({
                                 "format_id": "best",
                                 "resolution": "Original",
                                 "ext": "mp4",
                                 "note": "Highest Available Quality",
-                            }
-                        )
+                            })
 
-                    media_url = entry.get("url") or target_url
-                    results.append(
-                        {
+                        media_url = entry.get("url") or target_url
+                        results.append({
                             "id": str(video_id),
                             "title": title,
                             "media_url": media_url,
@@ -1468,11 +1498,23 @@ class MediaInspector:
                             "formats_available": format_options[:15],
                             "uploader": entry.get("uploader") or entry.get("channel"),
                             "subtitles": list((entry.get("subtitles") or {}).keys()),
-                        }
-                    )
+                        })
 
-        except Exception as exc:
-            logger.debug("yt-dlp probe info: %s", exc)
+                    if results:
+                        break
+                last_error = RuntimeError("yt-dlp returned no video information.")
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "yt-dlp metadata probe attempt %d/%d failed%s: %s",
+                    attempt_index,
+                    len(attempts),
+                    f" using {player_client}" if player_client else "",
+                    exc,
+                )
+
+        if not results and last_error:
+            logger.warning("YouTube/video metadata probe exhausted its attempts: %s", last_error)
 
         return results
 
