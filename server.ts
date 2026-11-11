@@ -613,7 +613,7 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
 
 async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
   const runtime = getQueueRuntime(workspaceId);
-  if (runtime.restoreStatus === 'success' || runtime.restoreStatus === 'error' || runtime.restoreStatus === 'cancelled') return;
+  if (runtime.restoreStatus === 'success' || runtime.restoreStatus === 'error' || (runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') return;
   if (runtime.restorePromise) return runtime.restorePromise;
   let restoreTimeout: ReturnType<typeof setTimeout> | undefined;
   runtime.restorePromise = (async () => {
@@ -640,7 +640,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
           addLog('info', 'Loaded this browser workspace queue checkpoint from Supabase.');
         }
       } catch (err: any) {
-        if (runtime.restoreStatus === 'cancelled') return;
+        if ((runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') return;
         runtime.restoreStatus = 'error';
         runtime.restoreMessage = err?.name === 'AbortError'
           ? 'Could not restore your queue: database request timed out after 12 seconds.'
@@ -664,7 +664,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
         addLog('error', `Could not restore local workspace queue checkpoint: ${err.message}`);
       }
     }
-    if (runtime.restoreStatus === 'cancelled') return;
+    if ((runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') return;
     if (saved) {
       const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
       const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string' ? [saved.current_item] : [];
@@ -690,7 +690,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
     }
     runtime.restoreCompleted = true;
   })().finally(() => {
-    if (runtime.restoreStatus === 'cancelled') runtime.restoreCompleted = true;
+    if ((runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') runtime.restoreCompleted = true;
     if (restoreTimeout) clearTimeout(restoreTimeout);
     runtime.restoreController = null;
     runtime.restorePromise = null;
