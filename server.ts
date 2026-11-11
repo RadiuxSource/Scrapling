@@ -1187,7 +1187,6 @@ app.get('/api/downloads', (req, res) => {
         const stats = fs.statSync(fullPath);
         return {
           filename: fileName,
-          file_path: fullPath,
           size_bytes: stats.size,
           size_mb: (stats.size / (1024 * 1024)).toFixed(2),
           created_at: stats.birthtime,
@@ -1216,15 +1215,32 @@ app.get('/api/downloads/stream/:filename', (req, res) => {
   const range = req.headers.range;
 
   if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-    if (start >= fileSize) {
-      res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + fileSize);
+    const match = /^bytes=(\\d*)-(\\d*)$/.exec(range.trim());
+    if (!match || (!match[1] && !match[2])) {
+      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
       return;
     }
 
+    let start: number;
+    let end: number;
+    if (!match[1]) {
+      const suffixLength = Number(match[2]);
+      if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+        return;
+      }
+      start = Math.max(0, fileSize - suffixLength);
+      end = fileSize - 1;
+    } else {
+      start = Number(match[1]);
+      end = match[2] ? Number(match[2]) : fileSize - 1;
+    }
+
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= fileSize || end < start) {
+      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+      return;
+    }
+    end = Math.min(end, fileSize - 1);
     const chunksize = end - start + 1;
     const file = fs.createReadStream(filePath, { start, end });
     const head = {
@@ -1235,8 +1251,7 @@ app.get('/api/downloads/stream/:filename', (req, res) => {
     };
 
     res.writeHead(206, head);
-    file.pipe(res);
-  } else {
+    file.pipe(res);  } else {
     const head = {
       'Content-Length': fileSize,
       'Content-Type': 'video/mp4',
