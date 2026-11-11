@@ -198,7 +198,10 @@ def main():
             )
             print(json.dumps(res))
 
-        elif action == "browser-session":\n            print(json.dumps(run_browser_action(payload)))\n\n        elif action == "telegram-test":
+        elif action == "browser-session":
+            print(json.dumps(run_browser_action(payload)))
+
+        elif action == "telegram-test":
             settings = load_settings()
             token = payload.get("telegram_bot_token") or settings.get("telegram_bot_token")
             chat_id = payload.get("telegram_chat_id") or settings.get("telegram_chat_id")

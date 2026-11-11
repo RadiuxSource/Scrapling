@@ -1,4 +1,5 @@
-import React, { useState } from 'react';\nimport { BrowserSessionPanel } from './BrowserSessionPanel';
+import React, { useState } from 'react';
+import { BrowserSessionPanel } from './BrowserSessionPanel';
 import {
   Search,
   Play,
@@ -103,7 +104,8 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   const [formatSelections, setFormatSelections] = useState<Record<string, string>>({});
 
   const urlsList = urlsInput
-    .split('\n')
+    .split('
+')
     .map((u) => u.trim())
     .filter((u) => u.length > 0);
 
@@ -162,7 +164,8 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   });
 
   return (
-    <div className="vortex-view vortex-view-console space-y-6">\n      <BrowserSessionPanel />
+    <div className="vortex-view vortex-view-console space-y-6">
+      <BrowserSessionPanel />
       {crawlRecovery && (
         <div className="rounded-xl border border-[var(--vortex-border)] bg-[var(--vortex-surface)] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3" role="status">
           <div className="flex items-start gap-3 min-w-0">
@@ -287,7 +290,8 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
                 type="button"
                 onClick={() => {
                   const existing = urlsInput.trim();
-                  setUrlsInput(existing ? `${existing}\n${sample.url}` : sample.url);
+                  setUrlsInput(existing ? `${existing}
+${sample.url}` : sample.url);
                 }}
                 className="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition-colors whitespace-nowrap"
               >
@@ -303,7 +307,9 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
             value={urlsInput}
             onChange={(e) => setUrlsInput(e.target.value)}
             rows={4}
-            placeholder="https://example.com/ (whole website catalog)\nhttps://video-platform.com/channel/...\nhttps://site.org/category/videos"
+            placeholder="https://example.com/ (whole website catalog)
+https://video-platform.com/channel/...
+https://site.org/category/videos"
             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500 resize-y"
           />
         </div>
