@@ -270,3 +270,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .owner-crawl-row strong { color:#d9e9c4; font:10px ui-monospace,monospace; }
 .owner-crawl-row span { margin-top:4px; color:#98a291; font-size:10px; }
 .owner-crawl-row button { flex-shrink:0; padding:7px 9px; border:1px solid #52683e; border-radius:6px; color:#c9e89c; font-size:10px; }
+
+.owner-name-edit { display:flex; gap:8px; margin:8px 0 14px; }
+.owner-name-edit input { min-width:0; flex:1; padding:9px; border:1px solid #354232; border-radius:6px; background:#10160f; color:#edf2e9; font-size:11px; }
+.owner-name-edit button { flex-shrink:0; padding:8px 10px; border:1px solid #52683e; border-radius:6px; color:#c9e89c; font-size:10px; }
