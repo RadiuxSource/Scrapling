@@ -420,15 +420,15 @@ type QueueRestoreStatus = 'idle' | 'restoring' | 'success' | 'cancelled' | 'erro
 let queueRestoreStatus: QueueRestoreStatus = 'idle';
 let queueRestoreMessage = '';
 let queueRestoreController: AbortController | null = null;
+let queueRestoreNoticeUntil = 0;
 
 app.get('/api/nonstop-queue/restore-status', (_req, res) => {
-  const restore = { status: queueRestoreStatus, message: queueRestoreMessage };
-  res.json({ success: true, restore });
-  // Deliver the one-time success/cancel notice to the UI once, then clear it.
-  if (queueRestoreStatus === 'success' || queueRestoreStatus === 'cancelled') {
+  if (queueRestoreNoticeUntil && Date.now() > queueRestoreNoticeUntil) {
     queueRestoreStatus = 'idle';
     queueRestoreMessage = '';
+    queueRestoreNoticeUntil = 0;
   }
+  res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
 });
 
 app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
@@ -436,6 +436,7 @@ app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
   queueRestoreStatus = 'cancelled';
   queueRestoreMessage = 'Queue restoration cancelled.';
   queueRestoreController?.abort();
+  queueRestoreNoticeUntil = Date.now() + 45_000;
   addLog('warn', queueRestoreMessage);
   res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
 });
@@ -534,6 +535,9 @@ async function restoreNonstopQueueState() {
   queueRestoreController = new AbortController();
   queueRestoreStatus = 'restoring';
   queueRestoreMessage = 'Restoring queue from the database, please wait…';
+  const restoreTimeout = setTimeout(() => {
+    if (queueRestoreStatus === 'restoring') queueRestoreController?.abort();
+  }, 12_000);
   if (config) {
     try {
       const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main&select=state`, {
@@ -544,14 +548,23 @@ async function restoreNonstopQueueState() {
       const rows = await response.json() as Array<{ state?: any }>;
       if (Array.isArray(rows) && rows[0]?.state) { saved = rows[0].state; addLog('info', 'Loaded nonstop queue checkpoint from Supabase durable storage.'); }
     } catch (err: any) {
-      if (err?.name === 'AbortError' || queueRestoreStatus === 'cancelled') {
-        queueRestoreStatus = 'cancelled'; queueRestoreMessage = 'Queue restoration cancelled.'; queueRestoreController = null; return;
+      if (queueRestoreStatus === 'cancelled') {
+        clearTimeout(restoreTimeout);
+        queueRestoreMessage = 'Queue restoration cancelled.';
+        queueRestoreController = null;
+        queueRestoreNoticeUntil = Date.now() + 45_000;
+        return;
       }
-      queueRestoreStatus = 'error'; queueRestoreMessage = `Could not restore queue from database: ${err.message}`; addLog('error', queueRestoreMessage);
+      queueRestoreStatus = 'error';
+      queueRestoreMessage = err?.name === 'AbortError'
+        ? 'Could not restore queue from database: request timed out after 12 seconds.'
+        : `Could not restore queue from database: ${err.message}`;
+      addLog('error', queueRestoreMessage);
     }
   } else {
     queueRestoreStatus = 'error'; queueRestoreMessage = 'Supabase is not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
   }
+  clearTimeout(restoreTimeout);
   if (!saved && queueRestoreStatus !== 'cancelled') {
     try {
       if (fs.existsSync(NONSTOP_QUEUE_FILE)) { saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8')); addLog('warn', 'Restored nonstop queue from local checkpoint; this fallback does not survive instance replacement.'); }
@@ -570,9 +583,11 @@ async function restoreNonstopQueueState() {
     nonstopQueue.is_running = nonstopQueue.pending_items.length > 0;
     if (nonstopQueue.pending_items.length > 0) addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s); automatic resume is enabled.`);
   }
+  if (queueRestoreStatus === 'cancelled') { queueRestoreController = null; return; }
   if (queueRestoreStatus !== 'error') {
     queueRestoreStatus = 'success';
     queueRestoreMessage = saved ? `Queue successfully restored. ${nonstopQueue.pending_items.length} unfinished download(s) recovered.` : 'Queue successfully checked. No saved downloads to restore.';
+    queueRestoreNoticeUntil = Date.now() + 45_000;
   }
   queueRestoreController = null;
 }
