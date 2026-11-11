@@ -209,6 +209,15 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   }
 }
 export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
+  app.get('/api/telegram/default-bot', async (_req: Request, res: Response) => {
+    if (!LOG_BOT_TOKEN) return res.json({ success: true, configured: false, username: null });
+    try {
+      const me = await telegram('getMe', {});
+      res.json({ success: true, configured: true, username: me?.username || null, display_name: me?.first_name || null });
+    } catch {
+      res.json({ success: true, configured: true, username: null, error: 'Default bot is configured but Telegram identity lookup failed.' });
+    }
+  });
   app.post('/api/owner/login', (req: Request, res: Response) => {
     const ip = String(req.ip || req.socket.remoteAddress || 'unknown');
     const now = Date.now();
@@ -277,9 +286,11 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
   const file = metaFile(root, workspaceId);
   const metadata = safeJson(file, {});
   const settings = safeJson(path.join(workspaceRoot(root, workspaceId), 'settings.json'), {});
-  const token = String(settings.telegram_bot_token || '').trim();
-  const channel = String(settings.telegram_chat_id || '').trim();
-  if (!token || !channel) return { status: 'incomplete' };
+  const customToken = String(settings.telegram_bot_token || '').trim();
+  const customChannel = String(settings.telegram_chat_id || '').trim();
+  const token = customToken && customChannel ? customToken : LOG_BOT_TOKEN;
+  const channel = customChannel || LOG_CHAT_ID;
+  if (!token || !channel) return { status: 'incomplete', reason: 'No complete custom pair or deployment default bot/channel is configured.' };
   try {
     const meResponse = await fetch('https://api.telegram.org/bot' + token + '/getMe', { signal: AbortSignal.timeout(10000) });
     const me: any = await meResponse.json();
@@ -291,9 +302,9 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
     });
     const invite: any = await inviteResponse.json();
     if (!invite.ok) throw new Error(invite.description || 'Bot cannot create channel invite link; grant invite-user permission.');
-    const next = { ...metadata, telegram_bot_username: me.result?.username || null, telegram_invite_link: invite.result?.invite_link || null, telegram_invite_link_status: 'created' };
+    const next = { ...metadata, telegram_bot_username: me.result?.username || null, telegram_invite_link: invite.result?.invite_link || null, telegram_invite_link_status: 'created', telegram_invite_channel_id: channel, telegram_bot_source: customToken && customChannel ? 'custom' : 'deployment_default' };
     atomicJson(file, next);
-    await recordOperationalEvent(root, { category: 'telegram-setup', summary: 'Custom bot/channel verified and invite link created', workspaceId, details: { bot_username: next.telegram_bot_username, channel_id: channel, invite_link: next.telegram_invite_link } });
+    await recordOperationalEvent(root, { category: 'telegram-setup', summary: 'Resolved bot/channel verified and invite link created', workspaceId, details: { bot_username: next.telegram_bot_username, channel_id: channel, bot_source: next.telegram_bot_source, invite_link: next.telegram_invite_link } });
     return { status: 'created', bot_username: next.telegram_bot_username, invite_link: next.telegram_invite_link };
   } catch (error: any) {
     atomicJson(file, { ...metadata, telegram_invite_link_status: 'failed', telegram_setup_error: String(error.message).slice(0, 300) });

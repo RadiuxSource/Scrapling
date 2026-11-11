@@ -44,3 +44,27 @@ Telegram API ID and API hash are optional and are used for the larger-file MTPro
 ## Upload size behavior
 
 The Bot API upload path may split larger media into smaller parts. When optional MTProto credentials are configured and supported by the deployment, Vortex can use its large-file upload path. Actual limits depend on Telegram and the deployed engine configuration.
+## Owner monitoring and operational log group (11/11/2026)
+
+The deployment operator configures these server-side environment variables:
+
+- `OWNER_ACCESS_SECRET`: long random secret for the protected owner dashboard API.
+- `OWNER_TELEGRAM_USER_ID`: numeric Telegram user ID allowed to use owner commands.
+- `LOG_TELEGRAM_CHAT_ID`: private log group/channel destination.
+- `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. If omitted, `TELEGRAM_BOT_TOKEN` is used as the default bot.
+
+Add the default monitoring bot to the log group as an administrator with permission to send messages and documents. For invite-link creation in a destination channel, the resolved bot must also have permission to invite users. The public endpoint `/api/telegram/default-bot` exposes only the configured bot's public username, never its token.
+
+Owner commands (only the configured numeric owner ID is authorized):
+
+- `/help` — command help.
+- `/workspaces` — known Browser IDs and activity counts.
+- `/userinfo BRW-XXXXXXXXXX` — detailed sanitized workspace report.
+- `/botinfos` — Telegram configuration inventory, with tokens masked.
+- Reply to a monitoring action's start/end message with `/logs` — receive its action `.txt` file.
+
+Operational monitoring records server starts/stops, queue restore outcomes, crawl/download lifecycle events, browser IDs, queue counts, and diagnostic errors. Each tracked action has a stable action ID; start and end Telegram message IDs are indexed for `/logs`. The system never exports raw bot tokens, Telegram API hashes, Supabase service keys, workspace signing secrets, or owner secrets.
+
+Each workspace receives a stable label such as `BRW-4A91C6D2F0`. This is a pseudonymous browser workspace ID, not a verified person's identity. Browser names are null unless explicitly supplied; IP addresses, browser fingerprints, and raw user-agent strings are not collected for this feature.
+
+The log group is operational-only. User media uploads continue to use the configured per-browser media destination and are not redirected to the private log group.

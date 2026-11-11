@@ -621,6 +621,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
   let restoreTimeout: ReturnType<typeof setTimeout> | undefined;
   runtime.restorePromise = (async () => {
     let saved: any = null;
+    let restoreSource = 'none';
     const config = getSupabaseQueueConfig();
     runtime.restoreController = new AbortController();
     runtime.restoreStatus = 'restoring';
@@ -640,6 +641,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
         const rows = await response.json() as Array<{ state?: any }>;
         if (Array.isArray(rows) && rows[0]?.state) {
           saved = rows[0].state;
+          restoreSource = 'supabase';
           addLog('info', 'Loaded this browser workspace queue checkpoint from Supabase.');
         }
       } catch (err: any) {
@@ -661,6 +663,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
         const checkpoint = queueCheckpointPath(workspaceId);
         if (fs.existsSync(checkpoint)) {
           saved = JSON.parse(fs.readFileSync(checkpoint, 'utf-8'));
+          restoreSource = 'local';
           addLog('warn', 'Restored this browser workspace queue from its local checkpoint; this fallback does not survive instance replacement.');
         }
       } catch (err: any) {
@@ -692,6 +695,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
       runtime.restoreNoticeUntil = Date.now() + 45_000;
     }
     runtime.restoreCompleted = true;
+    void recordOperationalEvent(ROOT_DIR, { category: 'queue-restore', summary: runtime.restoreStatus === 'success' ? 'Browser queue restore finished successfully' : 'Browser queue restore failed', workspaceId, details: { source: restoreSource, restore_status: runtime.restoreStatus, pending_items: runtime.state.pending_items.length, completed_count: runtime.state.completed_count, failed_count: runtime.state.failed_count, current_item_requeued: Boolean(saved?.current_item), message: runtime.restoreMessage } });
   })().finally(() => {
     if ((runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') runtime.restoreCompleted = true;
     if (restoreTimeout) clearTimeout(restoreTimeout);
@@ -745,6 +749,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
       getWorkspaceJobs().set(job_id, job);
       persistWorkspaceJob(job, workspaceId);
       addLog('info', `[Nonstop Queue ${queue.current_index}/${queue.total_items}] Downloading: ${cleanTitle}`);
+      void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Nonstop queue item started', workspaceId, actionId: job_id, phase: 'start', details: { job_id, title: cleanTitle, position: `${queue.current_index}/${queue.total_items}`, source_url: item.media_url } });
 
       try {
         job.status = 'downloading';
@@ -793,6 +798,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
       }
 
       persistWorkspaceJob(job, workspaceId);
+      void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Nonstop queue item ended', workspaceId, actionId: job_id, phase: 'end', details: { job_id, title: cleanTitle, status: job.status, error: job.error || null, output_filename: job.output_filename || null, duration_ms: job.finished_at ? job.finished_at - job.started_at : null } });
       runtime.currentItem = null;
       await persistNonstopQueueState(workspaceId);
     } finally {
@@ -937,6 +943,7 @@ app.post('/api/scrape', (req, res) => {
   activeCrawlTaskIds.set(workspaceId, taskId);
   persistWorkspaceCrawlTasks(workspaceId);
   addLog('info', `Queued background crawl [${taskId}] for ${cleanUrls.length} URL(s)`);
+  void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Browser started a crawl task', workspaceId, actionId: taskId, phase: 'start', details: { task_id: taskId, urls: cleanUrls.join(', '), deep_crawl: crawlRequest.deep_crawl, max_subpages: crawlRequest.max_subpages, subpage_offset: crawlRequest.subpage_offset } });
   res.status(202).json({ success: true, task_id: taskId, status: 'running' });
 
   void (async () => {
@@ -947,12 +954,14 @@ app.post('/api/scrape', (req, res) => {
       task.finished_at = Date.now();
       persistWorkspaceCrawlTasks(workspaceId);
       addLog('info', `Background crawl [${taskId}] completed: ${task.result?.total_videos_detected ?? 0} video(s) detected`);
+      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Browser crawl task completed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, status: task.status, videos_detected: task.result?.total_videos_detected ?? 0, duration_ms: task.finished_at! - task.started_at } });
     } catch (err: any) {
       task.status = 'failed';
       task.error = err?.message || 'Unknown crawler error';
       task.finished_at = Date.now();
       persistWorkspaceCrawlTasks(workspaceId);
       addLog('error', `Background crawl [${taskId}] failed: ${task.error}`);
+      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Browser crawl task failed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, status: task.status, error: task.error, duration_ms: task.finished_at! - task.started_at } });
     } finally {
       if (activeCrawlTaskIds.get(workspaceId) === taskId) activeCrawlTaskIds.delete(workspaceId);
       const expiry = Date.now() - 30 * 60 * 1000;
@@ -964,10 +973,48 @@ app.post('/api/scrape', (req, res) => {
   })();
 });
 
+app.post('/api/scrape/resume/:id', (req, res) => {
+  const workspaceId = getWorkspaceId();
+  const tasks = getWorkspaceCrawlTasks(workspaceId);
+  const previous = tasks.get(req.params.id);
+  if (!previous) return res.status(404).json({ success: false, error: 'Crawl task not found in this browser workspace.' });
+  if (!previous.request || !Array.isArray(previous.request.urls) || !previous.request.urls.length) {
+    return res.status(422).json({ success: false, error: 'This crawl has no saved request and cannot be resumed.' });
+  }
+  const activeId = activeCrawlTaskIds.get(workspaceId);
+  if (activeId && tasks.get(activeId)?.status === 'running') {
+    return res.status(409).json({ success: false, error: 'A crawl is already running in this browser workspace.' });
+  }
+  const taskId = 'crawl_' + randomUUID();
+  const crawlRequest = { ...previous.request, urls: [...previous.request.urls] };
+  const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now(), request: crawlRequest };
+  (task as any).resumed_from = previous.task_id;
+  tasks.set(taskId, task);
+  activeCrawlTaskIds.set(workspaceId, taskId);
+  persistWorkspaceCrawlTasks(workspaceId);
+  addLog('info', 'Resuming crawl request ' + previous.task_id + ' as ' + taskId + '; the crawler restarts the saved request rather than restoring Python memory.');
+  void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Owner/browser resumed a saved crawl request', workspaceId, actionId: taskId, phase: 'start', details: { task_id: taskId, resumed_from: previous.task_id, urls: crawlRequest.urls.join(', '), note: 'Request replay; exact in-memory crawler position is not available.' } });
+  res.status(202).json({ success: true, task_id: taskId, status: 'running', resumed_from: previous.task_id });
+  void (async () => {
+    try {
+      task.result = await runPythonRunner('scrape-batch', crawlRequest);
+      task.status = 'completed'; task.finished_at = Date.now();
+      persistWorkspaceCrawlTasks(workspaceId);
+      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl completed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, videos_detected: task.result?.total_videos_detected ?? 0 } });
+    } catch (error: any) {
+      task.status = 'failed'; task.error = error?.message || 'Unknown crawler error'; task.finished_at = Date.now();
+      persistWorkspaceCrawlTasks(workspaceId);
+      void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl failed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, error: task.error } });
+    } finally {
+      if (activeCrawlTaskIds.get(workspaceId) === taskId) activeCrawlTaskIds.delete(workspaceId);
+    }
+  })();
+});
+
 app.get('/api/scrape/tasks', (_req, res) => {
   const tasks = Array.from(getWorkspaceCrawlTasks().values())
     .sort((a, b) => b.started_at - a.started_at)
-    .slice(0, 1);
+    .slice(0, 20);
   res.json({ success: true, tasks });
 });
 
@@ -1274,6 +1321,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   await persistNonstopQueueState(workspaceId);
 
   addLog('warn', 'Halt request received for this browser workspace; terminating its active download processes.');
+  void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser user requested queue termination', workspaceId, details: { pending_items_discarded: queue.pending_items.length, active_processes: Array.from(activeProcesses.values()).filter(entry => entry.workspaceId === workspaceId).length, completed_count: queue.completed_count, failed_count: queue.failed_count } });
   for (const [runId, entry] of activeProcesses.entries()) {
     if (entry.workspaceId !== workspaceId) continue;
     addLog('warn', `Forcefully killing this workspace's active process [${entry.action}] (PID: ${entry.proc?.pid})`);
@@ -1310,6 +1358,7 @@ app.post('/api/jobs/cancel/:id', (req, res) => {
     job.finished_at = Date.now();
     persistWorkspaceJob(job);
     addLog('warn', `Job [${jobId}] canceled by user`);
+    void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'User canceled a download job', workspaceId: getWorkspaceId(), actionId: jobId, phase: 'end', details: { job_id: jobId, title: job.title, status: 'canceled_by_user' } });
     return res.json({ success: true, message: `Job ${jobId} canceled` });
   }
 

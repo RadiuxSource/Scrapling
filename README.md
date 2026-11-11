@@ -434,3 +434,13 @@ Keep credentials and private environment files out of commits.
 Built to inspect deeper, extract smarter, and keep batch workflows moving.
 
 </div>
+
+
+## 11/11/2026 — Owner monitoring and Telegram operations
+
+- Added the protected owner API and Telegram command foundation for browser workspace inventory, detailed sanitized `/userinfo` reports, `/botinfos`, and reply-to-message `/logs` exports.
+- Added stable pseudonymous Browser IDs (`BRW-…`) and persistent workspace created/last-seen timestamps.
+- Added server lifecycle, queue restoration, crawl lifecycle, and download lifecycle operational events with per-action text logs and Telegram start/end message indexing.
+- Added saved crawl-request replay through `POST /api/scrape/resume/:id`. This re-runs the saved request; it does not restore an interrupted Python process's exact in-memory position.
+- Added a public default-bot identity endpoint that returns the bot username only, never the token.
+- Added owner monitoring environment variable documentation. Raw bot tokens and API hashes are masked in owner exports.
