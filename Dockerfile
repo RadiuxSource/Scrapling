@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     ffmpeg \
     curl \
+    unzip \
     procps \
     ca-certificates \
     libatomic1 \
