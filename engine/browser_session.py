@@ -100,7 +100,7 @@ def run_browser_action(payload):
             for line in COOKIE.read_text(encoding="utf-8", errors="replace").splitlines():
                 if not line or line.startswith("#"):
                     continue
-                fields = line.split("\\t")
+                fields = line.split("\t")
                 if len(fields) >= 7:
                     try:
                         cookies.append({"domain": fields[0], "name": fields[5], "expires": int(fields[4] or 0)})
