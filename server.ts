@@ -483,6 +483,7 @@ interface QueueRuntime {
   restoreController: AbortController | null;
   restoreNoticeUntil: number;
   restoreCompleted: boolean;
+  workerActive: boolean;
   restorePromise: Promise<void> | null;
 }
 const queueRuntimes = new Map<string, QueueRuntime>();
@@ -498,6 +499,7 @@ function createQueueRuntime(): QueueRuntime {
     restoreController: null,
     restoreNoticeUntil: 0,
     restoreCompleted: false,
+    workerActive: false,
     restorePromise: null,
   };
 }
@@ -700,81 +702,89 @@ async function ensureQueueRestored(workspaceId = getWorkspaceId()): Promise<void
 }
 
 async function processNextNonstopItem(workspaceId: string): Promise<void> {
+  const runtime = getQueueRuntime(workspaceId);
+  if (runtime.workerActive) return;
+  runtime.workerActive = true;
+
   return workspaceContext.run(workspaceId, async () => {
-    const runtime = getQueueRuntime(workspaceId);
-    const queue = runtime.state;
-    if (!queue.is_running || queue.pending_items.length === 0) {
-      queue.is_running = false;
-      queue.current_title = '';
-      await persistNonstopQueueState(workspaceId);
-      addLog('info', `Nonstop queue finished: ${queue.completed_count} completed, ${queue.failed_count} failed.`);
-      return;
-    }
-
-    const item = queue.pending_items.shift()!;
-    runtime.currentItem = item;
-    queue.current_index++;
-    queue.current_title = item.title;
-    void persistNonstopQueueState(workspaceId);
-
-    const job_id = `dl_${randomUUID()}`;
-    const cleanTitle = item.title || 'video';
-    const job: JobStatus = {
-      job_id, title: cleanTitle, media_url: item.media_url, format_id: item.format_id,
-      status: 'queued', progress_percent: 0, speed_mbps: 0, eta_seconds: 0,
-      total_bytes: 0, started_at: Date.now(),
-    };
-    getWorkspaceJobs().set(job_id, job);
-    addLog('info', `[Nonstop Queue ${queue.current_index}/${queue.total_items}] Downloading: ${cleanTitle}`);
-
     try {
-      job.status = 'downloading';
-      const result = await runPythonRunner('download-job', {
-        job_id, media_url: item.media_url, title: cleanTitle, format_id: item.format_id,
-      });
-      if (!queue.is_running) return;
-      if (result.status === 'completed') {
-        job.status = 'completed';
-        job.progress_percent = 100;
-        job.output_filename = result.output_filename;
-        job.output_path = result.output_file;
-        job.total_bytes = result.file_size_bytes || 0;
-        job.finished_at = Date.now();
-        queue.completed_count++;
-        addLog('info', `[Nonstop Queue] Finished MP4: ${result.output_filename}`);
-        const currentSession = parsedLinkSessions[parsedLinkSessions.length - 1];
-        if (currentSession && result.output_filename) {
-          currentSession.outputFiles.add(result.output_filename);
-          currentSession.jobIds.add(job_id);
-          currentSession.reportFiles.add(`${job_id}.json`);
-        }
-        if (result.telegram_uploaded) addLog('info', `[Nonstop Queue] Telegram upload completed for: ${cleanTitle}`);
-        else if (result.telegram_result?.error) addLog('warn', `[Nonstop Queue] Telegram upload warning: ${result.telegram_result.error}`);
-      } else {
-        job.status = 'failed';
-        job.error = result.error || 'Download failed in Python engine';
-        job.finished_at = Date.now();
-        queue.failed_count++;
-        addLog('error', `[Nonstop Queue] Item failed: ${job.error}`);
-      }
-    } catch (err: any) {
-      if (!queue.is_running) {
-        job.status = 'failed';
-        job.error = 'Halted by user';
-        job.finished_at = Date.now();
+      const queue = runtime.state;
+      if (!queue.is_running || queue.pending_items.length === 0) {
+        queue.is_running = false;
+        queue.current_title = '';
+        await persistNonstopQueueState(workspaceId);
+        addLog('info', `Nonstop queue finished: ${queue.completed_count} completed, ${queue.failed_count} failed.`);
         return;
       }
-      job.status = 'failed';
-      job.error = err.message;
-      job.finished_at = Date.now();
-      queue.failed_count++;
-      addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
-    }
 
-    runtime.currentItem = null;
-    await persistNonstopQueueState(workspaceId);
-    if (!queue.is_running || isShuttingDown) return;
-    setTimeout(() => { void processNextNonstopItem(workspaceId); }, 500);
+      const item = queue.pending_items.shift()!;
+      runtime.currentItem = item;
+      queue.current_index++;
+      queue.current_title = item.title;
+      void persistNonstopQueueState(workspaceId);
+
+      const job_id = `dl_${randomUUID()}`;
+      const cleanTitle = item.title || 'video';
+      const job: JobStatus = {
+        job_id, title: cleanTitle, media_url: item.media_url, format_id: item.format_id,
+        status: 'queued', progress_percent: 0, speed_mbps: 0, eta_seconds: 0,
+        total_bytes: 0, started_at: Date.now(),
+      };
+      getWorkspaceJobs().set(job_id, job);
+      addLog('info', `[Nonstop Queue ${queue.current_index}/${queue.total_items}] Downloading: ${cleanTitle}`);
+
+      try {
+        job.status = 'downloading';
+        const result = await runPythonRunner('download-job', {
+          job_id, media_url: item.media_url, title: cleanTitle, format_id: item.format_id,
+        });
+        if (!queue.is_running) return;
+        if (result.status === 'completed') {
+          job.status = 'completed';
+          job.progress_percent = 100;
+          job.output_filename = result.output_filename;
+          job.output_path = result.output_file;
+          job.total_bytes = result.file_size_bytes || 0;
+          job.finished_at = Date.now();
+          queue.completed_count++;
+          addLog('info', `[Nonstop Queue] Finished MP4: ${result.output_filename}`);
+          const currentSession = parsedLinkSessions[parsedLinkSessions.length - 1];
+          if (currentSession && result.output_filename) {
+            currentSession.outputFiles.add(result.output_filename);
+            currentSession.jobIds.add(job_id);
+            currentSession.reportFiles.add(`${job_id}.json`);
+          }
+          if (result.telegram_uploaded) addLog('info', `[Nonstop Queue] Telegram upload completed for: ${cleanTitle}`);
+          else if (result.telegram_result?.error) addLog('warn', `[Nonstop Queue] Telegram upload warning: ${result.telegram_result.error}`);
+        } else {
+          job.status = 'failed';
+          job.error = result.error || 'Download failed in Python engine';
+          job.finished_at = Date.now();
+          queue.failed_count++;
+          addLog('error', `[Nonstop Queue] Item failed: ${job.error}`);
+        }
+      } catch (err: any) {
+        if (!queue.is_running) {
+          job.status = 'failed';
+          job.error = 'Halted by user';
+          job.finished_at = Date.now();
+          return;
+        }
+        job.status = 'failed';
+        job.error = err.message;
+        job.finished_at = Date.now();
+        queue.failed_count++;
+        addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
+      }
+
+      runtime.currentItem = null;
+      await persistNonstopQueueState(workspaceId);
+    } finally {
+      runtime.workerActive = false;
+      if (runtime.state.is_running && runtime.state.pending_items.length > 0 && !isShuttingDown) {
+        setTimeout(() => { void processNextNonstopItem(workspaceId); }, 500);
+      }
+    }
   });
 }
 
