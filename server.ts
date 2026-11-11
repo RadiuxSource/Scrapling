@@ -539,6 +539,9 @@ interface QueueRuntime {
   state: NonstopQueueState;
   currentItem: QueueItem | null;
   saveChain: Promise<void>;
+  latestQueueMutationAt: number;
+  lastRemoteSaveAt: number;
+  lastRemoteSaveError: string | null;
   restoreStatus: QueueRestoreStatus;
   restoreMessage: string;
   restoreController: AbortController | null;
@@ -557,6 +560,9 @@ function createQueueRuntime(): QueueRuntime {
     state: { is_running: false, total_items: 0, current_index: 0, current_title: '', completed_count: 0, failed_count: 0, pending_items: [] },
     currentItem: null,
     saveChain: Promise.resolve(),
+    latestQueueMutationAt: 0,
+    lastRemoteSaveAt: 0,
+    lastRemoteSaveError: null,
     restoreStatus: 'idle',
     restoreMessage: '',
     restoreController: null,
@@ -625,6 +631,7 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
     queue_action_id: queueRunIds.get(workspaceId) || null,
     saved_at: Date.now(),
   };
+  runtime.latestQueueMutationAt = state.saved_at;
   runtime.saveChain = runtime.saveChain.then(async () => {
     const checkpoint = queueCheckpointPath(workspaceId);
     const tempFile = `${checkpoint}.tmp`;
@@ -638,38 +645,47 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
 
     const config = getSupabaseQueueConfig();
     if (!config) {
+      runtime.lastRemoteSaveError = 'Supabase queue backup is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
       if (!queueStorageWarningShown) {
         queueStorageWarningShown = true;
-        addLog('warn', 'Supabase queue backup is not configured. Workspace queues are only saved on the instance filesystem and may be lost when Koyeb replaces the instance.');
+        addLog('error', `${runtime.lastRemoteSaveError} Queue processing is paused until durable backup is available.`);
       }
       return;
     }
-    try {
-      const rowId = queueWorkspaceRowId(workspaceId);
-      // Use PostgREST's explicit upsert endpoint. POST filters are not a
-      // reliable way to target an existing row; on_conflict=id guarantees
-      // that each browser checkpoint is inserted or updated by its primary key.
-      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?on_conflict=id`, {
-        method: 'POST',
-        headers: {
-          apikey: config.key,
-          Authorization: `Bearer ${config.key}`,
-          'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates,return=representation',
-        },
-        body: JSON.stringify({ id: rowId, state, updated_at: new Date().toISOString() }),
-      });
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(`Supabase returned HTTP ${response.status}: ${detail.slice(0, 300)}`);
+
+    const rowId = queueWorkspaceRowId(workspaceId);
+    let lastError = 'Unknown Supabase backup error';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?on_conflict=id`, {
+          method: 'POST',
+          headers: {
+            apikey: config.key,
+            Authorization: `Bearer ${config.key}`,
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=representation',
+          },
+          body: JSON.stringify({ id: rowId, state, updated_at: new Date().toISOString() }),
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(`Supabase returned HTTP ${response.status}: ${detail.slice(0, 300)}`);
+        }
+        const persistedRows = await response.json() as Array<{ id?: string; state?: any }>;
+        if (!Array.isArray(persistedRows) || !persistedRows.some((row) => row.id === rowId && row.state?.saved_at === state.saved_at)) {
+          throw new Error('Supabase did not return the exact queue checkpoint that was just written.');
+        }
+        runtime.lastRemoteSaveAt = Math.max(runtime.lastRemoteSaveAt, state.saved_at);
+        runtime.lastRemoteSaveError = null;
+        return;
+      } catch (err: any) {
+        lastError = err?.name === 'TimeoutError' ? 'Supabase queue backup timed out after 12 seconds.' : err.message;
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 700));
       }
-      const persistedRows = await response.json() as Array<{ id?: string; state?: any }>;
-      if (!Array.isArray(persistedRows) || !persistedRows.some((row) => row.id === rowId && row.state)) {
-        throw new Error('Supabase accepted the queue backup but did not return the expected workspace row. The remote checkpoint could not be verified.');
-      }
-    } catch (err: any) {
-      addLog('error', `Supabase queue backup failed; local workspace checkpoint was retained: ${err.message}`);
     }
+    runtime.lastRemoteSaveError = lastError;
+    addLog('error', `Supabase queue backup failed after 3 attempts; queue processing is paused to avoid losing pending downloads on Koyeb restart: ${lastError}`);
   });
   return runtime.saveChain;
 }
@@ -891,7 +907,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
       await persistNonstopQueueState(workspaceId);
     } finally {
       runtime.workerActive = false;
-      if (runtime.state.is_running && runtime.state.pending_items.length > 0 && !isShuttingDown && !runtime.dispatchScheduled) {
+      if (runtime.state.is_running && runtime.state.pending_items.length > 0 && runtime.lastRemoteSaveAt >= runtime.latestQueueMutationAt && !isShuttingDown && !runtime.dispatchScheduled) {
         runtime.dispatchScheduled = true;
         setTimeout(() => { runtime.dispatchScheduled = false; void processNextNonstopItem(workspaceId); }, 500);
       }
@@ -1362,6 +1378,14 @@ app.post('/api/download-all-nonstop', async (req, res) => {
   queue.total_items += newItems.length;
   queue.is_running = true;
   await persistNonstopQueueState(workspaceId);
+  if (runtime.lastRemoteSaveAt < runtime.latestQueueMutationAt) {
+    return res.status(503).json({
+      success: false,
+      error: 'The queue was added in memory but could not be durably backed up to Supabase. Downloads are paused so Koyeb restart cannot silently discard these items. Check Supabase configuration/table permissions and retry.',
+      backup_error: runtime.lastRemoteSaveError || 'Supabase checkpoint verification is pending.',
+      queue: { total: queue.total_items, current: queue.current_index, pending: queue.pending_items.length, is_running: queue.is_running },
+    });
+  }
   addLog('info', `Enqueued ${newItems.length} videos into this browser's private queue (Total items: ${queue.total_items})`);
   if (!runtime.currentItem) void processNextNonstopItem(workspaceId);
 
