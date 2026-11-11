@@ -499,6 +499,7 @@ interface QueueRuntime {
   restorePromise: Promise<void> | null;
 }
 const queueRuntimes = new Map<string, QueueRuntime>();
+const queueRunIds = new Map<string, string>();
 let queueStorageWarningShown = false;
 
 function createQueueRuntime(): QueueRuntime {
@@ -730,6 +731,11 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         queue.current_title = '';
         await persistNonstopQueueState(workspaceId);
         addLog('info', `Nonstop queue finished: ${queue.completed_count} completed, ${queue.failed_count} failed.`);
+        const completedRunId = queueRunIds.get(workspaceId);
+        if (completedRunId) {
+          void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser nonstop queue completed', workspaceId, actionId: completedRunId, phase: 'end', details: { completed_count: queue.completed_count, failed_count: queue.failed_count, pending_count: 0, outcome: 'completed' } });
+          queueRunIds.delete(workspaceId);
+        }
         return;
       }
 
@@ -757,8 +763,9 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         const result = await runPythonRunner('download-job', {
           job_id, media_url: item.media_url, title: cleanTitle, format_id: item.format_id,
         });
-        if (!queue.is_running) return;
-        if (result.status === 'completed') {
+        if (!queue.is_running) {
+          job.status = 'failed'; job.error = 'Halted by user or owner'; job.finished_at = Date.now();
+        } else if (result.status === 'completed') {
           job.status = 'completed';
           job.progress_percent = 100;
           job.output_filename = result.output_filename;
@@ -784,22 +791,26 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         }
       } catch (err: any) {
         if (!queue.is_running) {
-          job.status = 'failed';
-          job.error = 'Halted by user';
-          job.finished_at = Date.now();
-          persistWorkspaceJob(job, workspaceId);
-          return;
+          job.status = 'failed'; job.error = 'Halted by user or owner'; job.finished_at = Date.now();
+        } else {
+          job.status = 'failed'; job.error = err.message; job.finished_at = Date.now();
+          queue.failed_count++;
+          addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
         }
-        job.status = 'failed';
-        job.error = err.message;
-        job.finished_at = Date.now();
-        queue.failed_count++;
-        addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
       }
 
       persistWorkspaceJob(job, workspaceId);
       void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Nonstop queue item ended', workspaceId, actionId: job_id, phase: 'end', details: { job_id, title: cleanTitle, status: job.status, error: job.error || null, output_filename: job.output_filename || null, duration_ms: job.finished_at ? job.finished_at - job.started_at : null } });
       runtime.currentItem = null;
+      if (queue.is_running && queue.pending_items.length === 0) {
+        queue.is_running = false; queue.current_title = '';
+        addLog('info', `Nonstop queue completed: ${queue.completed_count} completed, ${queue.failed_count} failed.`);
+        const completedRunId = queueRunIds.get(workspaceId);
+        if (completedRunId) {
+          void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser nonstop queue completed', workspaceId, actionId: completedRunId, phase: 'end', details: { completed_count: queue.completed_count, failed_count: queue.failed_count, pending_count: 0, outcome: 'completed' } });
+          queueRunIds.delete(workspaceId);
+        }
+      }
       await persistNonstopQueueState(workspaceId);
     } finally {
       runtime.workerActive = false;
@@ -1278,6 +1289,12 @@ app.post('/api/download-all-nonstop', async (req, res) => {
   })).filter((item: QueueItem) => typeof item.media_url === 'string' && item.media_url.trim());
   if (!newItems.length) return res.status(400).json({ success: false, error: 'No valid video URLs were supplied' });
 
+  const wasRunning = queue.is_running;
+  if (!wasRunning || !queueRunIds.has(workspaceId)) {
+    const queueActionId = 'queue_' + randomUUID();
+    queueRunIds.set(workspaceId, queueActionId);
+    void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser started a nonstop download queue', workspaceId, actionId: queueActionId, phase: 'start', details: { newly_added_items: newItems.length, existing_pending_items: queue.pending_items.length, completed_count: queue.completed_count, failed_count: queue.failed_count } });
+  }
   queue.pending_items.push(...newItems);
   queue.total_items += newItems.length;
   queue.is_running = true;
@@ -1314,6 +1331,8 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   const workspaceId = getWorkspaceId();
   const runtime = getQueueRuntime(workspaceId);
   const queue = runtime.state;
+  const pendingItemsDiscarded = queue.pending_items.length;
+  const queueActionId = queueRunIds.get(workspaceId);
   queue.is_running = false;
   queue.pending_items = [];
   runtime.currentItem = null;
@@ -1321,7 +1340,8 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   await persistNonstopQueueState(workspaceId);
 
   addLog('warn', 'Halt request received for this browser workspace; terminating its active download processes.');
-  void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser user requested queue termination', workspaceId, details: { pending_items_discarded: queue.pending_items.length, active_processes: Array.from(activeProcesses.values()).filter(entry => entry.workspaceId === workspaceId).length, completed_count: queue.completed_count, failed_count: queue.failed_count } });
+  void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser user requested queue termination', workspaceId, actionId: queueActionId, phase: queueActionId ? 'end' : undefined, details: { pending_items_discarded: pendingItemsDiscarded, active_processes: Array.from(activeProcesses.values()).filter(entry => entry.workspaceId === workspaceId).length, completed_count: queue.completed_count, failed_count: queue.failed_count, outcome: 'terminated_by_user' } });
+  if (queueActionId) queueRunIds.delete(workspaceId);
   for (const [runId, entry] of activeProcesses.entries()) {
     if (entry.workspaceId !== workspaceId) continue;
     addLog('warn', `Forcefully killing this workspace's active process [${entry.action}] (PID: ${entry.proc?.pid})`);
@@ -1733,6 +1753,10 @@ async function shutdownGracefully(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   addLog('warn', `Received ${signal}; beginning graceful shutdown.`);
+  for (const [workspaceId, actionId] of queueRunIds.entries()) {
+    const runtime = queueRuntimes.get(workspaceId);
+    void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Queue interrupted by server shutdown/restart', workspaceId, actionId, phase: 'end', details: { signal, pending_items: runtime?.state.pending_items.length || 0, completed_count: runtime?.state.completed_count || 0, failed_count: runtime?.state.failed_count || 0, outcome: 'interrupted_by_server_restart' } });
+  }
   void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Server shutdown/restart signal received', details: { signal, active_processes: activeProcesses.size, workspaces_with_loaded_queues: queueRuntimes.size } });
 
   // Stop dispatching new items for every workspace while allowing active runners
