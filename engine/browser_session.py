@@ -48,7 +48,7 @@ def export_cookies(context):
     for c in context.cookies():
         domain, name = c.get("domain", ""), c.get("name", "")
         if not domain or not name: continue
-        lines.append("\t".join([domain, "TRUE" if domain.startswith(".") else "FALSE", c.get("path") or "/", "TRUE" if c.get("secure") else "FALSE", str(int(c.get("expires") or 0)), name, c.get("value", "")]))
+        lines.append("\t".join([domain, "TRUE" if domain.startswith(".") else "FALSE", c.get("path") or "/", "TRUE" if c.get("secure") else "FALSE", str(max(0, int(c.get("expires") or 0))), name, c.get("value", "")]))
     tmp = COOKIE.with_suffix(".tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
@@ -72,8 +72,10 @@ def prepare_youtube_cookies(url="https://www.youtube.com/"):
             export_cookies(ctx)
             cookies = ctx.cookies()
             youtube_cookies = sum(1 for cookie in cookies if "youtube.com" in cookie.get("domain", "") or "google.com" in cookie.get("domain", ""))
-            logger_message = f"Automatically refreshed workspace Chromium cookies ({youtube_cookies} YouTube/Google cookies)."
-            return {"success": True, "cookie_count": len(cookies), "youtube_cookie_count": youtube_cookies, "message": logger_message}
+            auth_cookie_names = {"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"}
+            authenticated_cookie_present = any(cookie.get("name") in auth_cookie_names for cookie in cookies)
+            logger_message = f"Automatically refreshed workspace Chromium cookies ({youtube_cookies} YouTube/Google cookies; authenticated-session-cookie-present={authenticated_cookie_present})."
+            return {"success": True, "cookie_count": len(cookies), "youtube_cookie_count": youtube_cookies, "authenticated_cookie_present": authenticated_cookie_present, "message": logger_message}
         finally:
             ctx.close()
 
