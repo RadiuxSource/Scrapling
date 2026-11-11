@@ -41,7 +41,6 @@ function atomicJson(file: string, value: any) {
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
   fs.renameSync(tmp, file);
 }
-export 
 const metadataSyncAt = new Map<string, number>();
 let metadataRestorePromise: Promise<void> | null = null;
 function metadataSupabaseConfig() {
@@ -59,6 +58,7 @@ function metadataSupabaseConfig() {
   return null;
 }
 async function persistWorkspaceMetadata(root: string, workspaceId: string, metadata: Record<string, any>): Promise<boolean> {
+  fs.mkdirSync(workspaceRoot(root, workspaceId), { recursive: true });
   const config = metadataSupabaseConfig();
   if (!config) return false;
   try {
@@ -106,7 +106,7 @@ async function ensureWorkspaceMetadataRestored(root: string): Promise<void> {
   })().finally(() => { metadataRestorePromise = null; });
   return metadataRestorePromise;
 }
-function browserIdForWorkspace(workspaceId: string) { return 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(); }
+export function browserIdForWorkspace(workspaceId: string) { return 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(); }
 function browserLabel(workspaceId: string) { return browserIdForWorkspace(workspaceId); }
 function workspaceRoot(root: string, id: string) { return path.join(root, 'data', 'workspaces', id); }
 function metaFile(root: string, id: string) { return path.join(workspaceRoot(root, id), 'workspace.json'); }
