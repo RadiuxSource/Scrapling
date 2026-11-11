@@ -1542,10 +1542,16 @@ app.get('/api/reports', (req, res) => {
       .map((f) => {
         try {
           const content = JSON.parse(fs.readFileSync(path.join(workspaceStoragePaths().reports, f), 'utf-8'));
+          const safeContent = { ...content };
+          // Reports are workspace-private, but must not disclose server filesystem paths.
+          for (const key of ['output_path', 'file_path']) delete safeContent[key];
+          if (typeof safeContent.output_file === 'string') {
+            safeContent.output_file = path.basename(safeContent.output_file);
+          }
           return {
             report_id: f.replace('.json', ''),
             file_name: f,
-            ...content,
+            ...safeContent,
           };
         } catch {
           return null;
