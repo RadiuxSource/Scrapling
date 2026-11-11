@@ -646,19 +646,26 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
     }
     try {
       const rowId = queueWorkspaceRowId(workspaceId);
-      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.${encodeURIComponent(rowId)}`, {
+      // Use PostgREST's explicit upsert endpoint. POST filters are not a
+      // reliable way to target an existing row; on_conflict=id guarantees
+      // that each browser checkpoint is inserted or updated by its primary key.
+      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?on_conflict=id`, {
         method: 'POST',
         headers: {
           apikey: config.key,
           Authorization: `Bearer ${config.key}`,
           'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates,return=minimal',
+          Prefer: 'resolution=merge-duplicates,return=representation',
         },
         body: JSON.stringify({ id: rowId, state, updated_at: new Date().toISOString() }),
       });
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`Supabase returned HTTP ${response.status}: ${detail.slice(0, 300)}`);
+      }
+      const persistedRows = await response.json() as Array<{ id?: string; state?: any }>;
+      if (!Array.isArray(persistedRows) || !persistedRows.some((row) => row.id === rowId && row.state)) {
+        throw new Error('Supabase accepted the queue backup but did not return the expected workspace row. The remote checkpoint could not be verified.');
       }
     } catch (err: any) {
       addLog('error', `Supabase queue backup failed; local workspace checkpoint was retained: ${err.message}`);
@@ -696,6 +703,20 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
           saved = rows[0].state;
           restoreSource = 'supabase';
           addLog('info', 'Loaded this browser workspace queue checkpoint from Supabase.');
+        } else {
+          // Never auto-assign the old shared queue to an anonymous browser.
+          // Detect it only so the UI can explain why the workspace row is empty.
+          const legacyResponse = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main&select=id`, {
+            headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+            signal: runtime.restoreController.signal,
+          });
+          if (legacyResponse.ok) {
+            const legacyRows = await legacyResponse.json() as Array<{ id?: string }>;
+            if (Array.isArray(legacyRows) && legacyRows.some((row) => row.id === 'main')) {
+              restoreSource = 'legacy-main-available';
+              addLog('warn', 'A legacy shared queue exists in Supabase, but it has not been assigned to this browser workspace. Use the one-time owner-authorized legacy queue claim.');
+            }
+          }
         }
       } catch (err: any) {
         if ((runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') return;
@@ -744,8 +765,10 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
     if (runtime.restoreStatus !== 'error') {
       runtime.restoreStatus = 'success';
       runtime.restoreMessage = saved
-        ? `Your queue was restored. ${runtime.state.pending_items.length} unfinished download(s) recovered.`
-        : 'Your private queue was checked. No saved downloads were found.';
+        ? `Your queue was restored from ${restoreSource}. ${runtime.state.pending_items.length} unfinished download(s) recovered.`
+        : restoreSource === 'legacy-main-available'
+          ? 'No queue was saved for this browser workspace. A legacy shared queue exists in Supabase but was not auto-assigned for privacy; use the one-time legacy queue claim from the original owner browser.'
+          : 'No workspace-specific queue row was found in Supabase or the local checkpoint. If you expected unfinished downloads, check that this browser kept its workspace cookie and that WORKSPACE_SECRET has not changed.';
       runtime.restoreNoticeUntil = Date.now() + 45_000;
     }
     runtime.restoreCompleted = true;
@@ -1294,7 +1317,8 @@ app.get('/api/nonstop-queue/restore-status', async (_req, res) => {
     runtime.restoreMessage = '';
     runtime.restoreNoticeUntil = 0;
   }
-  res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
+  const browserId = 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase();
+  res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage, browser_id: browserId, workspace_id: workspaceId } });
 });
 
 app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
