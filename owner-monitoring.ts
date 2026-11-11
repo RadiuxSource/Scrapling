@@ -100,7 +100,7 @@ export async function recordOperationalEvent(root: string, event: {
     '<b>Time:</b> ' + new Date().toISOString() +
     (detailLines.length ? '\n' + detailLines.map(x => html(x)).join('\n') : '');
   appendActionLog(root, actionId, event.category + ' | ' + event.summary + ' | browser=' + browser + ' | ' + detailLines.join(' | '));
-  const messageId = await sendActionMessage(root, text, event.actionId ? actionId : undefined, event.phase);
+  const messageId = await sendActionMessage(root, text + (event.workspaceId ? '\\n\\n<b>More info:</b> /userinfo ' + html(browser) + ' · reply with /logs for this action' : ''), actionId, event.phase || 'end');
   return { actionId, messageId };
 }
 function loadWorkspaceSummary(root: string, id: string) {
