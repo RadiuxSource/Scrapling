@@ -776,11 +776,22 @@ class MediaInspector:
             logger.warning("Browser recovery unavailable: %s", exc)
             return recovered
 
-        root_host = (urllib.parse.urlparse(root_url).hostname or "").lower()
+        root_host = (
+            (urllib.parse.urlparse(root_url).hostname or "")
+            .lower()
+            .removeprefix("www.")
+        )
+        # discovered_urls has already passed the normal crawler's video-link
+        # heuristics (video route, player/card class, or thumbnail card).
+        # Do not hard-code /video/: real catalogs also use /watch, /clip,
+        # /episode, query-based IDs, and custom same-site detail routes.
         same_site_video_urls = [
             url for url in discovered_urls
-            if (urllib.parse.urlparse(url).hostname or "").lower() == root_host
-            and urllib.parse.urlparse(url).path.lower().startswith("/video/")
+            if (
+                (urllib.parse.urlparse(url).hostname or "")
+                .lower()
+                .removeprefix("www.")
+            ) == root_host
         ]
         # Probe a small bounded sample in one browser session. A single
         # detail page may be an ad-heavy or broken entry; trying a few sibling
