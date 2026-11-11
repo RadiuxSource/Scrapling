@@ -132,6 +132,8 @@ function loadWorkspaceSummary(root: string, id: string) {
       telegram_bot_configured: Boolean(settings.telegram_bot_token),
       telegram_bot_token_masked: mask(settings.telegram_bot_token || ''),
       telegram_chat_id: settings.telegram_chat_id || null,
+      effective_bot_source: settings.telegram_bot_token && settings.telegram_chat_id ? 'custom' : 'deployment_default',
+      effective_channel_id: settings.telegram_chat_id || LOG_CHAT_ID || null,
       telegram_channel_title: metadata.telegram_channel_title || null,
       telegram_channel_username: metadata.telegram_channel_username || null,
       telegram_channel_type: metadata.telegram_channel_type || null,
@@ -281,7 +283,7 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     res.setHeader('Set-Cookie', COOKIE + '=' + encodeURIComponent(session) + '; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=' + Math.floor(SESSION_TTL / 1000));
     res.json({ success: true, expires_at: Date.now() + SESSION_TTL });
   });
-  app.post('/api/owner/logout', ownerMiddleware, (_req: Request, res: Response) => {
+  app.post('/api/owner/logout', ownerMiddleware, (req: Request, res: Response) => {
     const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0].trim();
     const secure = req.secure || forwardedProto === 'https' ? '; Secure' : '';
     res.setHeader('Set-Cookie', COOKIE + '=; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=0');
