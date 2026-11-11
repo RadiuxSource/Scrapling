@@ -346,6 +346,7 @@ The API is intended to be used by the Vortex frontend. Workspace isolation is be
 - Extraction behavior was not changed.
 - Phase 5 scopes crawl task status/active-crawl guards and app/Telegram settings by workspace; existing shared settings and Telegram environment values are intentionally not auto-migrated.
 - **Phase 6:** crawl task history/results are now persisted in each workspace's `logs/crawl-tasks.json` using atomic file replacement. After a restart, completed/failed task results remain available to that same browser; a task that was still running is marked failed with a clear restart message rather than remaining stuck forever. The crawl itself is not resumed after restart; the independent nonstop download queue recovery remains unchanged.
+- Telegram bot token and API hash remain masked in settings responses. Saving unrelated settings with blank masked-secret fields now preserves the workspace's existing credentials instead of accidentally erasing them.
 - Phase 4 keeps new downloads, reports, and job progress files in `data/workspaces/<workspace-id>/`; file listing, streaming, download, deletion, report access, Telegram upload lookup, and two-link retention are workspace-scoped. Existing files in the former shared folders are intentionally not auto-migrated.
 
 
