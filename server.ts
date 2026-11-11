@@ -456,7 +456,7 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<a
   });
 }
 
-// Nonstop Auto-pilot Download Queue
+// Nonstop Auto-pilot Download Queue — isolated per anonymous browser workspace.
 interface QueueItem {
   media_url: string;
   title: string;
@@ -473,47 +473,48 @@ interface NonstopQueueState {
   pending_items: QueueItem[];
 }
 
-let nonstopQueue: NonstopQueueState = {
-  is_running: false,
-  total_items: 0,
-  current_index: 0,
-  current_title: '',
-  completed_count: 0,
-  failed_count: 0,
-  pending_items: [],
-};
-
-const NONSTOP_QUEUE_FILE = path.join(LOGS_DIR, 'nonstop-queue.json');
-let currentNonstopItem: QueueItem | null = null;
-let queueSaveChain: Promise<void> = Promise.resolve();
-let queueStorageWarningShown = false;
 type QueueRestoreStatus = 'idle' | 'restoring' | 'success' | 'cancelled' | 'error';
-let queueRestoreStatus: QueueRestoreStatus = 'idle';
-let queueRestoreMessage = '';
-let queueRestoreController: AbortController | null = null;
-let queueRestoreNoticeUntil = 0;
+interface QueueRuntime {
+  state: NonstopQueueState;
+  currentItem: QueueItem | null;
+  saveChain: Promise<void>;
+  restoreStatus: QueueRestoreStatus;
+  restoreMessage: string;
+  restoreController: AbortController | null;
+  restoreNoticeUntil: number;
+  restorePromise: Promise<void> | null;
+}
+const queueRuntimes = new Map<string, QueueRuntime>();
+let queueStorageWarningShown = false;
 
-app.get('/api/nonstop-queue/restore-status', (_req, res) => {
-  if (queueRestoreNoticeUntil && Date.now() > queueRestoreNoticeUntil) {
-    queueRestoreStatus = 'idle';
-    queueRestoreMessage = '';
-    queueRestoreNoticeUntil = 0;
+function createQueueRuntime(): QueueRuntime {
+  return {
+    state: { is_running: false, total_items: 0, current_index: 0, current_title: '', completed_count: 0, failed_count: 0, pending_items: [] },
+    currentItem: null,
+    saveChain: Promise.resolve(),
+    restoreStatus: 'idle',
+    restoreMessage: '',
+    restoreController: null,
+    restoreNoticeUntil: 0,
+    restorePromise: null,
+  };
+}
+function getQueueRuntime(workspaceId = getWorkspaceId()): QueueRuntime {
+  let runtime = queueRuntimes.get(workspaceId);
+  if (!runtime) {
+    runtime = createQueueRuntime();
+    queueRuntimes.set(workspaceId, runtime);
   }
-  res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
-});
-
-app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
-  if (queueRestoreStatus !== 'restoring') return res.json({ success: false, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
-  queueRestoreStatus = 'cancelled';
-  queueRestoreMessage = 'Queue restoration cancelled.';
-  queueRestoreController?.abort();
-  queueRestoreNoticeUntil = Date.now() + 45_000;
-  addLog('warn', queueRestoreMessage);
-  res.json({ success: true, restore: { status: queueRestoreStatus, message: queueRestoreMessage } });
-});
+  return runtime;
+}
+function queueWorkspaceRowId(workspaceId: string): string {
+  return `ws_${workspaceId}`;
+}
+function queueCheckpointPath(workspaceId: string): string {
+  return path.join(LOGS_DIR, `nonstop-queue-${workspaceId}.json`);
+}
 
 function getSupabaseQueueConfig() {
-  // Koyeb environment values are sometimes pasted with surrounding quotes.
   const rawValue = (process.env.SUPABASE_URL || '').trim();
   const rawUrl = rawValue.replace(/^["']|["']$/g, '').trim();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -521,9 +522,6 @@ function getSupabaseQueueConfig() {
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol !== 'https:') throw new Error('SUPABASE_URL must use https://.');
-
-    // Accept the canonical project origin, its REST endpoint, and dashboard
-    // project URLs. A root slash is normal in URL parsing and must be accepted.
     const dashboardProject = parsed.pathname.match(/^\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i);
     if ((parsed.hostname === 'supabase.com' || parsed.hostname === 'www.supabase.com') && dashboardProject) {
       parsed.hostname = `${dashboardProject[1]}.supabase.co`;
@@ -536,7 +534,6 @@ function getSupabaseQueueConfig() {
       }
       parsed.pathname = '';
     }
-
     parsed.search = '';
     parsed.hash = '';
     return { url: parsed.origin, key };
@@ -546,24 +543,25 @@ function getSupabaseQueueConfig() {
   }
 }
 
-function persistNonstopQueueState(forceResume = false): Promise<void> {
+function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = false): Promise<void> {
+  const runtime = getQueueRuntime(workspaceId);
+  const queue = runtime.state;
   const state = {
-    is_running: forceResume ? (nonstopQueue.pending_items.length > 0 || Boolean(currentNonstopItem)) : nonstopQueue.is_running,
-    total_items: nonstopQueue.total_items,
-    current_index: nonstopQueue.current_index,
-    completed_count: nonstopQueue.completed_count,
-    failed_count: nonstopQueue.failed_count,
-    pending_items: nonstopQueue.pending_items,
-    current_item: currentNonstopItem,
+    is_running: forceResume ? (queue.pending_items.length > 0 || Boolean(runtime.currentItem)) : queue.is_running,
+    total_items: queue.total_items,
+    current_index: queue.current_index,
+    completed_count: queue.completed_count,
+    failed_count: queue.failed_count,
+    pending_items: [...queue.pending_items],
+    current_item: runtime.currentItem,
     saved_at: Date.now(),
   };
-
-  // Serialize writes so a slower earlier request cannot overwrite a newer queue snapshot.
-  queueSaveChain = queueSaveChain.then(async () => {
-    const tempFile = `${NONSTOP_QUEUE_FILE}.tmp`;
+  runtime.saveChain = runtime.saveChain.then(async () => {
+    const checkpoint = queueCheckpointPath(workspaceId);
+    const tempFile = `${checkpoint}.tmp`;
     try {
       fs.writeFileSync(tempFile, JSON.stringify(state), 'utf-8');
-      fs.renameSync(tempFile, NONSTOP_QUEUE_FILE);
+      fs.renameSync(tempFile, checkpoint);
     } catch (err: any) {
       addLog('error', `Could not persist local nonstop queue checkpoint: ${err.message}`);
       try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch {}
@@ -573,13 +571,13 @@ function persistNonstopQueueState(forceResume = false): Promise<void> {
     if (!config) {
       if (!queueStorageWarningShown) {
         queueStorageWarningShown = true;
-        addLog('warn', 'Supabase queue backup is not configured. Queue is only saved on the instance filesystem and may be lost when Koyeb replaces the instance. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable durable recovery.');
+        addLog('warn', 'Supabase queue backup is not configured. Workspace queues are only saved on the instance filesystem and may be lost when Koyeb replaces the instance.');
       }
       return;
     }
-
     try {
-      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main`, {
+      const rowId = queueWorkspaceRowId(workspaceId);
+      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.${encodeURIComponent(rowId)}`, {
         method: 'POST',
         headers: {
           apikey: config.key,
@@ -587,185 +585,189 @@ function persistNonstopQueueState(forceResume = false): Promise<void> {
           'Content-Type': 'application/json',
           Prefer: 'resolution=merge-duplicates,return=minimal',
         },
-        body: JSON.stringify({ id: 'main', state, updated_at: new Date().toISOString() }),
+        body: JSON.stringify({ id: rowId, state, updated_at: new Date().toISOString() }),
       });
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`Supabase returned HTTP ${response.status}: ${detail.slice(0, 300)}`);
       }
     } catch (err: any) {
-      addLog('error', `Supabase queue backup failed; local checkpoint was retained: ${err.message}`);
+      addLog('error', `Supabase queue backup failed; local workspace checkpoint was retained: ${err.message}`);
     }
   });
-  return queueSaveChain;
+  return runtime.saveChain;
 }
 
-async function restoreNonstopQueueState() {
-  let saved: any = null;
-  const config = getSupabaseQueueConfig();
-  queueRestoreController = new AbortController();
-  queueRestoreStatus = 'restoring';
-  queueRestoreMessage = 'Restoring queue from the database, please wait…';
-  const restoreTimeout = setTimeout(() => {
-    if (queueRestoreStatus === 'restoring') queueRestoreController?.abort();
-  }, 12_000);
-  if (config) {
-    try {
-      const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main&select=state`, {
-        headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
-        signal: queueRestoreController.signal,
-      });
-      if (!response.ok) throw new Error(`Supabase returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const rows = await response.json() as Array<{ state?: any }>;
-      if (Array.isArray(rows) && rows[0]?.state) { saved = rows[0].state; addLog('info', 'Loaded nonstop queue checkpoint from Supabase durable storage.'); }
-    } catch (err: any) {
-      if (queueRestoreStatus === 'cancelled') {
-        clearTimeout(restoreTimeout);
-        queueRestoreMessage = 'Queue restoration cancelled.';
-        queueRestoreController = null;
-        queueRestoreNoticeUntil = Date.now() + 45_000;
-        return;
-      }
-      queueRestoreStatus = 'error';
-      queueRestoreMessage = err?.name === 'AbortError'
-        ? 'Could not restore queue from database: request timed out after 12 seconds.'
-        : `Could not restore queue from database: ${err.message}`;
-      addLog('error', queueRestoreMessage);
-    }
-  } else {
-    queueRestoreStatus = 'error'; queueRestoreMessage = 'Supabase is not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
-  }
-  clearTimeout(restoreTimeout);
-  if (!saved && queueRestoreStatus !== 'cancelled') {
-    try {
-      if (fs.existsSync(NONSTOP_QUEUE_FILE)) { saved = JSON.parse(fs.readFileSync(NONSTOP_QUEUE_FILE, 'utf-8')); addLog('warn', 'Restored nonstop queue from local checkpoint; this fallback does not survive instance replacement.'); }
-    } catch (err: any) { addLog('error', `Could not restore local nonstop queue checkpoint: ${err.message}`); }
-  }
-  if (queueRestoreStatus === 'cancelled') { queueRestoreController = null; return; }
-  if (saved) {
-    const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
-    const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string' ? [saved.current_item] : [];
-    nonstopQueue.pending_items = [...interrupted, ...pending].filter((item: any) => item && typeof item.media_url === 'string' && item.media_url.trim());
-    nonstopQueue.total_items = Number(saved.total_items) || nonstopQueue.pending_items.length;
-    nonstopQueue.current_index = Number(saved.current_index) || 0;
-    nonstopQueue.completed_count = Number(saved.completed_count) || 0;
-    nonstopQueue.failed_count = Number(saved.failed_count) || 0;
-    nonstopQueue.current_title = ''; currentNonstopItem = null;
-    nonstopQueue.is_running = nonstopQueue.pending_items.length > 0;
-    if (nonstopQueue.pending_items.length > 0) addLog('warn', `Recovered ${nonstopQueue.pending_items.length} unfinished nonstop download(s); automatic resume is enabled.`);
-  }
-  if (queueRestoreStatus === 'cancelled') { queueRestoreController = null; return; }
-  if (queueRestoreStatus !== 'error') {
-    queueRestoreStatus = 'success';
-    queueRestoreMessage = saved ? `Queue successfully restored. ${nonstopQueue.pending_items.length} unfinished download(s) recovered.` : 'Queue successfully checked. No saved downloads to restore.';
-    queueRestoreNoticeUntil = Date.now() + 45_000;
-  }
-  queueRestoreController = null;
-}
-async function processNextNonstopItem() {
-  if (!nonstopQueue.is_running || nonstopQueue.pending_items.length === 0) {
-    nonstopQueue.is_running = false;
-    nonstopQueue.current_title = '';
-    await persistNonstopQueueState();
-    addLog('info', `Nonstop queue finished: ${nonstopQueue.completed_count} completed, ${nonstopQueue.failed_count} failed.`);
-    return;
-  }
+async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
+  const runtime = getQueueRuntime(workspaceId);
+  if (runtime.restoreStatus === 'success' || runtime.restoreStatus === 'error' || runtime.restoreStatus === 'cancelled') return;
+  if (runtime.restorePromise) return runtime.restorePromise;
+  runtime.restorePromise = (async () => {
+    let saved: any = null;
+    const config = getSupabaseQueueConfig();
+    runtime.restoreController = new AbortController();
+    runtime.restoreStatus = 'restoring';
+    runtime.restoreMessage = 'Restoring your private queue from the database, please wait…';
+    const restoreTimeout = setTimeout(() => {
+      if (runtime.restoreStatus === 'restoring') runtime.restoreController?.abort();
+    }, 12_000);
 
-  const item = nonstopQueue.pending_items.shift()!;
-  currentNonstopItem = item;
-  nonstopQueue.current_index++;
-  persistNonstopQueueState();
-  nonstopQueue.current_title = item.title;
-
-  const job_id = `dl_${randomUUID()}`;
-  const cleanTitle = item.title || 'video';
-
-  const job: JobStatus = {
-    job_id,
-    title: cleanTitle,
-    media_url: item.media_url,
-    format_id: item.format_id,
-    status: 'queued',
-    progress_percent: 0,
-    speed_mbps: 0,
-    eta_seconds: 0,
-    total_bytes: 0,
-    started_at: Date.now(),
-  };
-
-  getWorkspaceJobs().set(job_id, job);
-  addLog('info', `[Nonstop Queue ${nonstopQueue.current_index}/${nonstopQueue.total_items}] Downloading: ${cleanTitle}`);
-
-  try {
-    job.status = 'downloading';
-    const result = await runPythonRunner('download-job', {
-      job_id,
-      media_url: item.media_url,
-      title: cleanTitle,
-      format_id: item.format_id,
-    });
-
-    if (!nonstopQueue.is_running) {
-      // Stopped while this job was finishing
-      return;
-    }
-
-    if (result.status === 'completed') {
-      job.status = 'completed';
-      job.progress_percent = 100;
-      job.output_filename = result.output_filename;
-      job.output_path = result.output_file;
-      job.total_bytes = result.file_size_bytes || 0;
-      job.finished_at = Date.now();
-      nonstopQueue.completed_count++;
-      addLog('info', `[Nonstop Queue] Finished MP4: ${result.output_filename}`);
-
-      // Associate with current link session for 2-link storage management
-      const currentSession = parsedLinkSessions[parsedLinkSessions.length - 1];
-      if (currentSession && result.output_filename) {
-        currentSession.outputFiles.add(result.output_filename);
-        currentSession.jobIds.add(job_id);
-        currentSession.reportFiles.add(`${job_id}.json`);
-      }
-
-      // VideoDownloader already performs the configured Telegram upload
-      // before its Python runner returns. Do not dispatch a second upload here.
-      if (result.telegram_uploaded) {
-        addLog('info', `[Nonstop Queue] Telegram upload completed for: ${cleanTitle}`);
-      } else if (result.telegram_result?.error) {
-        addLog('warn', `[Nonstop Queue] Telegram upload warning: ${result.telegram_result.error}`);
+    if (config) {
+      try {
+        const rowId = queueWorkspaceRowId(workspaceId);
+        const response = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.${encodeURIComponent(rowId)}&select=state`, {
+          headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+          signal: runtime.restoreController.signal,
+        });
+        if (!response.ok) throw new Error(`Supabase returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+        const rows = await response.json() as Array<{ state?: any }>;
+        if (Array.isArray(rows) && rows[0]?.state) {
+          saved = rows[0].state;
+          addLog('info', 'Loaded this browser workspace queue checkpoint from Supabase.');
+        }
+      } catch (err: any) {
+        if (runtime.restoreStatus === 'cancelled') return;
+        runtime.restoreStatus = 'error';
+        runtime.restoreMessage = err?.name === 'AbortError'
+          ? 'Could not restore your queue: database request timed out after 12 seconds.'
+          : `Could not restore your queue from database: ${err.message}`;
+        addLog('error', runtime.restoreMessage);
       }
     } else {
-      job.status = 'failed';
-      job.error = result.error || 'Download failed in Python engine';
-      job.finished_at = Date.now();
-      nonstopQueue.failed_count++;
-      addLog('error', `[Nonstop Queue] Item failed: ${job.error}`);
+      runtime.restoreStatus = 'error';
+      runtime.restoreMessage = 'Supabase is not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
     }
-  } catch (err: any) {
-    if (!nonstopQueue.is_running) {
-      job.status = 'failed';
-      job.error = 'Halted by user';
-      job.finished_at = Date.now();
+    clearTimeout(restoreTimeout);
+
+    if (!saved && runtime.restoreStatus !== 'cancelled') {
+      try {
+        const checkpoint = queueCheckpointPath(workspaceId);
+        if (fs.existsSync(checkpoint)) {
+          saved = JSON.parse(fs.readFileSync(checkpoint, 'utf-8'));
+          addLog('warn', 'Restored this browser workspace queue from its local checkpoint; this fallback does not survive instance replacement.');
+        }
+      } catch (err: any) {
+        addLog('error', `Could not restore local workspace queue checkpoint: ${err.message}`);
+      }
+    }
+    if (runtime.restoreStatus === 'cancelled') return;
+    if (saved) {
+      const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
+      const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string' ? [saved.current_item] : [];
+      runtime.state.pending_items = [...interrupted, ...pending].filter((item: any) => item && typeof item.media_url === 'string' && item.media_url.trim());
+      runtime.state.total_items = Number(saved.total_items) || runtime.state.pending_items.length;
+      runtime.state.current_index = Number(saved.current_index) || 0;
+      runtime.state.completed_count = Number(saved.completed_count) || 0;
+      runtime.state.failed_count = Number(saved.failed_count) || 0;
+      runtime.state.current_title = '';
+      runtime.currentItem = null;
+      runtime.state.is_running = runtime.state.pending_items.length > 0;
+      if (runtime.state.pending_items.length) addLog('warn', `Recovered ${runtime.state.pending_items.length} unfinished download(s) for this browser workspace; automatic resume is enabled.`);
+    }
+    if (runtime.restoreStatus !== 'error') {
+      runtime.restoreStatus = 'success';
+      runtime.restoreMessage = saved
+        ? `Your queue was restored. ${runtime.state.pending_items.length} unfinished download(s) recovered.`
+        : 'Your private queue was checked. No saved downloads were found.';
+      runtime.restoreNoticeUntil = Date.now() + 45_000;
+    }
+  })().finally(() => {
+    clearTimeout((runtime as any).restoreTimeout);
+    runtime.restoreController = null;
+    runtime.restorePromise = null;
+  });
+  return runtime.restorePromise;
+}
+
+async function ensureQueueRestored(workspaceId = getWorkspaceId()): Promise<void> {
+  const runtime = getQueueRuntime(workspaceId);
+  if (runtime.restoreStatus === 'idle' || runtime.restoreStatus === 'restoring') {
+    await restoreNonstopQueueState(workspaceId);
+  }
+  if (runtime.restoreStatus === 'success' && runtime.state.pending_items.length > 0 && !runtime.state.is_running && !isShuttingDown) {
+    runtime.state.is_running = true;
+    await persistNonstopQueueState(workspaceId);
+    void processNextNonstopItem(workspaceId);
+  }
+}
+
+async function processNextNonstopItem(workspaceId: string): Promise<void> {
+  return workspaceContext.run(workspaceId, async () => {
+    const runtime = getQueueRuntime(workspaceId);
+    const queue = runtime.state;
+    if (!queue.is_running || queue.pending_items.length === 0) {
+      queue.is_running = false;
+      queue.current_title = '';
+      await persistNonstopQueueState(workspaceId);
+      addLog('info', `Nonstop queue finished: ${queue.completed_count} completed, ${queue.failed_count} failed.`);
       return;
     }
-    job.status = 'failed';
-    job.error = err.message;
-    job.finished_at = Date.now();
-    nonstopQueue.failed_count++;
-    addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
-  }
 
-  currentNonstopItem = null;
-  persistNonstopQueueState();
+    const item = queue.pending_items.shift()!;
+    runtime.currentItem = item;
+    queue.current_index++;
+    queue.current_title = item.title;
+    void persistNonstopQueueState(workspaceId);
 
-  // If stopped, do not trigger next
-  if (!nonstopQueue.is_running || isShuttingDown) {
-    return;
-  }
+    const job_id = `dl_${randomUUID()}`;
+    const cleanTitle = item.title || 'video';
+    const job: JobStatus = {
+      job_id, title: cleanTitle, media_url: item.media_url, format_id: item.format_id,
+      status: 'queued', progress_percent: 0, speed_mbps: 0, eta_seconds: 0,
+      total_bytes: 0, started_at: Date.now(),
+    };
+    getWorkspaceJobs().set(job_id, job);
+    addLog('info', `[Nonstop Queue ${queue.current_index}/${queue.total_items}] Downloading: ${cleanTitle}`);
 
-  // Nonstop: automatically process next item immediately
-  setTimeout(processNextNonstopItem, 500);
+    try {
+      job.status = 'downloading';
+      const result = await runPythonRunner('download-job', {
+        job_id, media_url: item.media_url, title: cleanTitle, format_id: item.format_id,
+      });
+      if (!queue.is_running) return;
+      if (result.status === 'completed') {
+        job.status = 'completed';
+        job.progress_percent = 100;
+        job.output_filename = result.output_filename;
+        job.output_path = result.output_file;
+        job.total_bytes = result.file_size_bytes || 0;
+        job.finished_at = Date.now();
+        queue.completed_count++;
+        addLog('info', `[Nonstop Queue] Finished MP4: ${result.output_filename}`);
+        const currentSession = parsedLinkSessions[parsedLinkSessions.length - 1];
+        if (currentSession && result.output_filename) {
+          currentSession.outputFiles.add(result.output_filename);
+          currentSession.jobIds.add(job_id);
+          currentSession.reportFiles.add(`${job_id}.json`);
+        }
+        if (result.telegram_uploaded) addLog('info', `[Nonstop Queue] Telegram upload completed for: ${cleanTitle}`);
+        else if (result.telegram_result?.error) addLog('warn', `[Nonstop Queue] Telegram upload warning: ${result.telegram_result.error}`);
+      } else {
+        job.status = 'failed';
+        job.error = result.error || 'Download failed in Python engine';
+        job.finished_at = Date.now();
+        queue.failed_count++;
+        addLog('error', `[Nonstop Queue] Item failed: ${job.error}`);
+      }
+    } catch (err: any) {
+      if (!queue.is_running) {
+        job.status = 'failed';
+        job.error = 'Halted by user';
+        job.finished_at = Date.now();
+        return;
+      }
+      job.status = 'failed';
+      job.error = err.message;
+      job.finished_at = Date.now();
+      queue.failed_count++;
+      addLog('error', `[Nonstop Queue] Item error: ${err.message}`);
+    }
+
+    runtime.currentItem = null;
+    await persistNonstopQueueState(workspaceId);
+    if (!queue.is_running || isShuttingDown) return;
+    setTimeout(() => { void processNextNonstopItem(workspaceId); }, 500);
+  });
 }
 
 // -------------------------------------------------------------
