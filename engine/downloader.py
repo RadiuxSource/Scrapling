@@ -105,9 +105,12 @@ class VideoDownloader:
 
         report_progress({"status": "downloading", "progress_percent": 3.0})
 
-        # Determine if URL is a direct media file or CDN link
+        # Platform watch pages are not direct media URLs.
+        parsed_media = urllib.parse.urlparse(media_url)
+        media_host = (parsed_media.hostname or "").lower().removeprefix("www.")
+        is_youtube = media_host == "youtu.be" or media_host == "youtube.com" or media_host.endswith(".youtube.com")
         url_lower = media_url.lower().split("?")[0]
-        is_direct = any(url_lower.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS) or "wikimedia.org" in url_lower
+        is_direct = not is_youtube and (any(url_lower.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS) or "wikimedia.org" in url_lower)
 
         download_success = False
         direct_attempted = False
@@ -143,11 +146,17 @@ class VideoDownloader:
                 )
                 download_success = True
             except Exception as ytdlp_err:
-                logger.warning(f"yt-dlp engine failed: {ytdlp_err}. Falling back to direct stream downloader...")
+                logger.warning(f"yt-dlp engine failed: {ytdlp_err}.")
+                # Never curl a YouTube watch page: it returns HTML challenge
+                # content, not a media stream, and can create corrupt tiny MP4s.
+                if is_youtube:
+                    report_data["status"] = "failed"
+                    report_data["error"] = str(ytdlp_err)
+                    report_data["end_time"] = time.time()
+                    report_progress({"status": "failed", "completed": False, "error": str(ytdlp_err)})
                 # A direct URL has already gone through the direct-stream
-                # pipeline above. Repeating the same transfer after yt-dlp
-                # fails only multiplies the wait without changing the request.
-                if not direct_attempted:
+                # pipeline above. Repeating the same transfer is unnecessary.
+                elif not direct_attempted:
                     try:
                         self._download_direct_stream(
                             media_url=media_url,
@@ -177,8 +186,11 @@ class VideoDownloader:
                         "error": str(ytdlp_err)
                     })
 
-        # Final verification
+        # Final verification: size alone cannot prove that the response is media.
         if download_success and final_filepath.exists():
+            if not self._is_valid_video_file(final_filepath):
+                final_filepath.unlink(missing_ok=True)
+                raise RuntimeError("Downloaded response is not a valid playable video; the source may have returned an HTML challenge or login page.")
             file_size = final_filepath.stat().st_size
             report_data["file_size_bytes"] = file_size
             report_data["status"] = "completed"
@@ -325,7 +337,7 @@ class VideoDownloader:
                                         "total_bytes": total_bytes or downloaded
                                     })
 
-                        if temp_download_path.exists() and temp_download_path.stat().st_size > 1000:
+                        if self._looks_like_media_file(temp_download_path):
                             stream_success = True
                             logger.info(f"[Tier 1] Header profile {p_idx} succeeded ({temp_download_path.stat().st_size} bytes downloaded).")
                             break
@@ -362,7 +374,7 @@ class VideoDownloader:
                             "speed_mbps": speed_mb,
                             "total_bytes": cur_sz
                         })
-                if proc.returncode == 0 and temp_download_path.exists() and temp_download_path.stat().st_size > 1000:
+                if proc.returncode == 0 and self._looks_like_media_file(temp_download_path):
                     stream_success = True
                     logger.info(f"[Tier 2] System curl succeeded ({temp_download_path.stat().st_size} bytes downloaded).")
             except Exception as curl_err:
@@ -446,9 +458,13 @@ class VideoDownloader:
                     "progress_percent": 95.0
                 })
 
-        format_rule = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+        format_rule = "bestvideo+bestaudio/best"
         if format_id and format_id not in ("best", "auto", "direct"):
-            format_rule = f"{format_id}+bestaudio/best"
+            if format_id.startswith("height:"):
+                requested_height = int(format_id.split(":", 1)[1])
+                format_rule = f"bestvideo[height<={requested_height}]+bestaudio/best[height<={requested_height}]/best"
+            else:
+                format_rule = f"{format_id}+bestaudio/best"
 
         parsed = urllib.parse.urlparse(media_url)
         origin = f"{parsed.scheme}://{parsed.netloc}/"
@@ -494,7 +510,10 @@ class VideoDownloader:
                 ydl_opts["cookiefile"] = str(cookie_path)
                 logger.info("yt-dlp authorized cookie file is configured.")
             else:
-                logger.warning("YTDLP_COOKIES_FILE is set but the file is not readable; continuing without cookies.")
+                raise RuntimeError("Configured YTDLP_COOKIES_FILE is not readable.")
+        browser_cookies = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+        if browser_cookies:
+            ydl_opts["cookiesfrombrowser"] = tuple(part or None for part in browser_cookies.split(":"))
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(media_url, download=True)
@@ -526,6 +545,30 @@ class VideoDownloader:
 
         if not final_filepath.exists() or final_filepath.stat().st_size <= 1000:
             raise RuntimeError("yt-dlp finished without producing a valid output video file.")
+
+    @staticmethod
+    def _looks_like_media_file(file_path: Path) -> bool:
+        try:
+            if not file_path.exists() or file_path.stat().st_size < 64 * 1024:
+                return False
+            with open(file_path, "rb") as stream:
+                header = stream.read(512).lstrip().lower()
+            if header.startswith((b"<!doctype html", b"<html", b"{", b"[")):
+                return False
+            return b"ftyp" in header[:64] or header.startswith(b"\x1aE\xdf\xa3") or header.startswith(b"\x47") or b"#extm3u" in header or b"<?xml" in header
+        except OSError:
+            return False
+
+    def _is_valid_video_file(self, file_path: Path) -> bool:
+        if not self._looks_like_media_file(file_path):
+            return False
+        try:
+            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(file_path)], capture_output=True, text=True, timeout=20)
+            metadata = json.loads(probe.stdout or "{}")
+            return probe.returncode == 0 and any(stream.get("codec_type") == "video" for stream in metadata.get("streams", []))
+        except Exception as exc:
+            logger.warning("Video validation failed: %s", exc)
+            return False
 
     def _convert_to_mp4(self, input_file: Path, output_file: Path):
         """

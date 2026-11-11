@@ -1375,11 +1375,25 @@ class MediaInspector:
 
                     format_options = []
                     best_resolution = None
+                    available_heights = sorted({
+                        int(item.get("height")) for item in formats
+                        if item.get("height") and item.get("vcodec") not in (None, "none")
+                    }, reverse=True)
+                    for requested_height in (2160, 1440, 1080, 720, 480, 360):
+                        if any(height >= requested_height for height in available_heights):
+                            format_options.append({
+                                "format_id": f"height:{requested_height}",
+                                "resolution": f"Up to {requested_height}p",
+                                "ext": "mp4",
+                                "note": f"Up to {requested_height}p",
+                            })
 
                     for item in formats:
                         height = item.get("height")
                         width = item.get("width")
                         ext = item.get("ext", "mp4")
+                        if not height or item.get("vcodec") in (None, "none") or int(height) < 360:
+                            continue
                         format_id = item.get("format_id", "")
                         video_codec = item.get("vcodec", "none")
                         audio_codec = item.get("acodec", "none")
@@ -1404,18 +1418,19 @@ class MediaInspector:
                         ):
                             best_resolution = f"{height}p"
 
-                        format_options.append(
-                            {
-                                "format_id": format_id,
+                        if height >= 360:
+                            format_options.append(
+                                {
+                                    "format_id": format_id,
                                 "resolution": resolution,
                                 "ext": ext,
                                 "vcodec": video_codec,
                                 "acodec": audio_codec,
                                 "filesize_mb": filesize_mb,
                                 "note": item.get("format_note")
-                                or f"{resolution} ({ext})",
-                            }
-                        )
+                                    or f"{resolution} ({ext})",
+                                }
+                            )
 
                     if not format_options:
                         format_options.append(
