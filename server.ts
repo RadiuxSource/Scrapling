@@ -482,6 +482,7 @@ interface QueueRuntime {
   restoreMessage: string;
   restoreController: AbortController | null;
   restoreNoticeUntil: number;
+  restoreCompleted: boolean;
   restorePromise: Promise<void> | null;
 }
 const queueRuntimes = new Map<string, QueueRuntime>();
@@ -496,6 +497,7 @@ function createQueueRuntime(): QueueRuntime {
     restoreMessage: '',
     restoreController: null,
     restoreNoticeUntil: 0,
+    restoreCompleted: false,
     restorePromise: null,
   };
 }
@@ -675,7 +677,9 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
         : 'Your private queue was checked. No saved downloads were found.';
       runtime.restoreNoticeUntil = Date.now() + 45_000;
     }
+    runtime.restoreCompleted = true;
   })().finally(() => {
+    if (runtime.restoreStatus === 'cancelled') runtime.restoreCompleted = true;
     if (restoreTimeout) clearTimeout(restoreTimeout);
     runtime.restoreController = null;
     runtime.restorePromise = null;
@@ -685,7 +689,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
 
 async function ensureQueueRestored(workspaceId = getWorkspaceId()): Promise<void> {
   const runtime = getQueueRuntime(workspaceId);
-  if (runtime.restoreStatus === 'idle' || runtime.restoreStatus === 'restoring') {
+  if (!runtime.restoreCompleted) {
     await restoreNonstopQueueState(workspaceId);
   }
   if (runtime.restoreStatus === 'success' && runtime.state.pending_items.length > 0 && !runtime.state.is_running && !isShuttingDown) {
@@ -1000,6 +1004,11 @@ app.get('/api/nonstop-queue/restore-status', async (_req, res) => {
   const workspaceId = getWorkspaceId();
   await ensureQueueRestored(workspaceId);
   const runtime = getQueueRuntime(workspaceId);
+  if (runtime.restoreNoticeUntil && Date.now() > runtime.restoreNoticeUntil) {
+    runtime.restoreStatus = 'idle';
+    runtime.restoreMessage = '';
+    runtime.restoreNoticeUntil = 0;
+  }
   res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
 });
 
