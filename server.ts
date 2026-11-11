@@ -55,7 +55,19 @@ interface JobStatus {
   finished_at?: number;
 }
 
-const activeJobs = new Map<string, JobStatus>();
+const workspaceJobs = new Map<string, Map<string, JobStatus>>();
+function getWorkspaceId(): string {
+  return workspaceContext.getStore() || 'system';
+}
+function getWorkspaceJobs(): Map<string, JobStatus> {
+  const workspaceId = getWorkspaceId();
+  let jobs = workspaceJobs.get(workspaceId);
+  if (!jobs) {
+    jobs = new Map<string, JobStatus>();
+    workspaceJobs.set(workspaceId, jobs);
+  }
+  return jobs;
+}
 
 // Logs are partitioned by a signed, anonymous browser workspace cookie.
 // AsyncLocalStorage carries the requesting workspace into background promises
@@ -223,7 +235,7 @@ function purgeOlderSessionsData() {
     }
 
     for (const jid of session.jobIds) {
-      activeJobs.delete(jid);
+      getWorkspaceJobs().delete(jid);
       purgedJobs++;
       const jobFile = path.join(LOGS_DIR, 'jobs', `${jid}.json`);
       if (fs.existsSync(jobFile)) {
@@ -322,6 +334,7 @@ interface ActiveProcessEntry {
   proc: any;
   action: string;
   jobId?: string;
+  workspaceId: string;
 }
 const activeProcesses = new Map<string, ActiveProcessEntry>();
 
@@ -363,6 +376,7 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<a
       proc,
       action,
       jobId: payload?.job_id,
+      workspaceId: getWorkspaceId(),
     };
     activeProcesses.set(runId, entry);
 
@@ -663,7 +677,7 @@ async function processNextNonstopItem() {
   persistNonstopQueueState();
   nonstopQueue.current_title = item.title;
 
-  const job_id = `dl_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const job_id = `dl_${randomUUID()}`;
   const cleanTitle = item.title || 'video';
 
   const job: JobStatus = {
@@ -679,7 +693,7 @@ async function processNextNonstopItem() {
     started_at: Date.now(),
   };
 
-  activeJobs.set(job_id, job);
+  getWorkspaceJobs().set(job_id, job);
   addLog('info', `[Nonstop Queue ${nonstopQueue.current_index}/${nonstopQueue.total_items}] Downloading: ${cleanTitle}`);
 
   try {
@@ -929,7 +943,7 @@ app.post('/api/download', async (req, res) => {
     started_at: Date.now(),
   };
 
-  activeJobs.set(job_id, job);
+  getWorkspaceJobs().set(job_id, job);
   addLog('info', `Enqueued single download [${job_id}] for: ${cleanTitle}`);
 
   (async () => {
@@ -1058,7 +1072,7 @@ killer.on('error', (err) => {
   }
 
   // 3. Mark all ongoing jobs as canceled
-  for (const [_, job] of activeJobs.entries()) {
+  for (const [_, job] of getWorkspaceJobs().entries()) {
     if (job.status === 'downloading' || job.status === 'processing_ffmpeg' || job.status === 'queued' || job.status === 'starting') {
       job.status = 'failed';
       job.error = 'Operation halted and terminated by user';
@@ -1091,10 +1105,10 @@ killer.on('error', (err) => {
 // Cancel a specific job
 app.post('/api/jobs/cancel/:id', (req, res) => {
   const jobId = req.params.id;
-  const job = activeJobs.get(jobId);
+  const job = getWorkspaceJobs().get(jobId);
 
   for (const [runId, entry] of activeProcesses.entries()) {
-    if (entry.jobId === jobId) {
+    if (entry.jobId === jobId && entry.workspaceId === getWorkspaceId()) {
       terminateProcessEntry(entry);
       activeProcesses.delete(runId);
     }
@@ -1114,8 +1128,8 @@ app.post('/api/jobs/cancel/:id', (req, res) => {
 // Delete a single job from the queue tracker
 app.delete('/api/jobs/:id', (req, res) => {
   const jobId = req.params.id;
-  if (activeJobs.has(jobId)) {
-    activeJobs.delete(jobId);
+  if (getWorkspaceJobs().has(jobId)) {
+    getWorkspaceJobs().delete(jobId);
     // Also remove from disk log if present
     const jobFile = path.join(LOGS_DIR, 'jobs', `${jobId}.json`);
     if (fs.existsSync(jobFile)) {
@@ -1131,9 +1145,9 @@ app.delete('/api/jobs/:id', (req, res) => {
 // Clear all finished/failed jobs
 app.delete('/api/jobs', (req, res) => {
   let cleared = 0;
-  for (const [id, job] of activeJobs.entries()) {
+  for (const [id, job] of getWorkspaceJobs().entries()) {
     if (job.status === 'completed' || job.status === 'failed') {
-      activeJobs.delete(id);
+      getWorkspaceJobs().delete(id);
       cleared++;
       const jobFile = path.join(LOGS_DIR, 'jobs', `${id}.json`);
       if (fs.existsSync(jobFile)) {
@@ -1156,8 +1170,8 @@ app.get('/api/jobs', (req, res) => {
     files.forEach((f) => {
       try {
         const data = JSON.parse(fs.readFileSync(path.join(jobsDir, f), 'utf-8'));
-        if (data.job_id && activeJobs.has(data.job_id)) {
-          const current = activeJobs.get(data.job_id)!;
+        if (data.job_id && getWorkspaceJobs().has(data.job_id)) {
+          const current = getWorkspaceJobs().get(data.job_id)!;
           if (current.status !== 'completed' && current.status !== 'failed') {
             Object.assign(current, data);
           }
@@ -1168,7 +1182,7 @@ app.get('/api/jobs', (req, res) => {
     });
   }
 
-  const jobsList = Array.from(activeJobs.values()).sort((a, b) => b.started_at - a.started_at);
+  const jobsList = Array.from(getWorkspaceJobs().values()).sort((a, b) => b.started_at - a.started_at);
   res.json({ success: true, jobs: jobsList });
 });
 
