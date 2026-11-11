@@ -512,7 +512,9 @@ class VideoDownloader:
                 ydl_opts["cookiefile"] = str(cookie_path)
                 logger.info("yt-dlp authorized cookie file is configured.")
             else:
-                raise RuntimeError("Configured YTDLP_COOKIES_FILE is not readable.")
+                # Cookie export is optional: public extraction must still work
+                # before the user has opened the workspace browser or signed in.
+                logger.info("No workspace cookie file exists yet; continuing without authorized cookies.")
         browser_cookies = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
         if browser_cookies:
             ydl_opts["cookiesfrombrowser"] = tuple(
