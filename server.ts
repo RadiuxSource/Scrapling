@@ -543,6 +543,7 @@ interface QueueRuntime {
   restoreNoticeUntil: number;
   restoreCompleted: boolean;
   workerActive: boolean;
+  dispatchScheduled: boolean;
   restorePromise: Promise<void> | null;
 }
 const queueRuntimes = new Map<string, QueueRuntime>();
@@ -560,6 +561,7 @@ function createQueueRuntime(): QueueRuntime {
     restoreNoticeUntil: 0,
     restoreCompleted: false,
     workerActive: false,
+    dispatchScheduled: false,
     restorePromise: null,
   };
 }
@@ -618,6 +620,7 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
     failed_count: queue.failed_count,
     pending_items: [...queue.pending_items],
     current_item: runtime.currentItem,
+    queue_action_id: queueRunIds.get(workspaceId) || null,
     saved_at: Date.now(),
   };
   runtime.saveChain = runtime.saveChain.then(async () => {
@@ -720,6 +723,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
     }
     if ((runtime.restoreStatus as QueueRestoreStatus) === 'cancelled') return;
     if (saved) {
+      if (typeof saved.queue_action_id === 'string' && saved.queue_action_id) queueRunIds.set(workspaceId, saved.queue_action_id);
       const pending = Array.isArray(saved.pending_items) ? saved.pending_items : [];
       const interrupted = saved.current_item && typeof saved.current_item.media_url === 'string' ? [saved.current_item] : [];
       runtime.state.pending_items = [...interrupted, ...pending].filter((item: any) => item && typeof item.media_url === 'string' && item.media_url.trim());
@@ -758,7 +762,7 @@ async function ensureQueueRestored(workspaceId = getWorkspaceId()): Promise<void
   if (!runtime.restoreCompleted) {
     await restoreNonstopQueueState(workspaceId);
   }
-  if (runtime.restoreStatus === 'success' && runtime.state.pending_items.length > 0 && !runtime.state.is_running && !isShuttingDown) {
+  if (runtime.restoreStatus === 'success' && runtime.state.pending_items.length > 0 && !runtime.workerActive && !runtime.dispatchScheduled && !isShuttingDown) {
     runtime.state.is_running = true;
     await persistNonstopQueueState(workspaceId);
     void processNextNonstopItem(workspaceId);
@@ -768,6 +772,7 @@ async function ensureQueueRestored(workspaceId = getWorkspaceId()): Promise<void
 async function processNextNonstopItem(workspaceId: string): Promise<void> {
   const runtime = getQueueRuntime(workspaceId);
   if (runtime.workerActive) return;
+  runtime.dispatchScheduled = false;
   runtime.workerActive = true;
 
   return workspaceContext.run(workspaceId, async () => {
@@ -861,8 +866,9 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
       await persistNonstopQueueState(workspaceId);
     } finally {
       runtime.workerActive = false;
-      if (runtime.state.is_running && runtime.state.pending_items.length > 0 && !isShuttingDown) {
-        setTimeout(() => { void processNextNonstopItem(workspaceId); }, 500);
+      if (runtime.state.is_running && runtime.state.pending_items.length > 0 && !isShuttingDown && !runtime.dispatchScheduled) {
+        runtime.dispatchScheduled = true;
+        setTimeout(() => { runtime.dispatchScheduled = false; void processNextNonstopItem(workspaceId); }, 500);
       }
     }
   });
@@ -1366,6 +1372,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   const queueActionId = queueRunIds.get(workspaceId);
   queue.is_running = false;
   queue.pending_items = [];
+  runtime.dispatchScheduled = false;
   runtime.currentItem = null;
   queue.current_title = '';
   await persistNonstopQueueState(workspaceId);
@@ -1765,7 +1772,7 @@ initializeOwnerMonitoring(app, {
     const runtime = queueRuntimes.get(workspaceId);
     const pendingQueueItems = runtime?.state.pending_items.length || 0;
     if (runtime) {
-      runtime.state.is_running = false; runtime.state.pending_items = []; runtime.currentItem = null; runtime.state.current_title = '';
+      runtime.state.is_running = false; runtime.state.pending_items = []; runtime.dispatchScheduled = false; runtime.currentItem = null; runtime.state.current_title = '';
       runtime.restoreController?.abort(); void persistNonstopQueueState(workspaceId);
       for (const job of (workspaceJobs.get(workspaceId)?.values() || [])) {
         if (!['completed', 'failed'].includes(job.status)) { job.status = 'failed'; job.error = 'Stopped by owner from Control Center'; job.finished_at = Date.now(); persistWorkspaceJob(job, workspaceId); }
@@ -1792,7 +1799,7 @@ async function startServer() {
 
   httpServer = app.listen(PORT, '0.0.0.0', () => {
     addLog('info', `Vortex Video Scraper & Downloader online on http://0.0.0.0:${PORT}`);
-    void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Koyeb instance started; Vortex web server is online', details: { port: PORT, node_version: process.version, workspace_secret_configured: Boolean(process.env.WORKSPACE_SECRET), supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) } });
+    void recordOperationalEvent(ROOT_DIR, { category: 'server', summary: 'Koyeb instance started; Vortex web server is online', details: { port: PORT, node_version: process.version, queue_restore_summary: JSON.stringify(startupQueueRestoreSummary), workspace_secret_configured: Boolean(process.env.WORKSPACE_SECRET), supabase_configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) } });
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
@@ -1846,9 +1853,53 @@ async function shutdownGracefully(signal: string) {
 process.on('SIGTERM', () => { void shutdownGracefully('SIGTERM'); });
 process.on('SIGINT', () => { void shutdownGracefully('SIGINT'); });
 
+const startupQueueRestoreSummary: Array<Record<string, unknown>> = [];
+
+async function restoreAllWorkspaceState() {
+  const workspacesDir = path.join(ROOT_DIR, 'data', 'workspaces');
+  if (!fs.existsSync(workspacesDir)) return;
+  const workspaceIds = fs.readdirSync(workspacesDir).filter((id) =>
+    /^[0-9a-f-]{36}$/i.test(id) && fs.statSync(path.join(workspacesDir, id)).isDirectory()
+  );
+  const supabaseConfigured = Boolean(getSupabaseQueueConfig());
+  for (let offset = 0; offset < workspaceIds.length; offset += 4) {
+    const batch = workspaceIds.slice(offset, offset + 4);
+    await Promise.all(batch.map(async (workspaceId) => {
+      try {
+        restoreWorkspaceJobs(workspaceId);
+        getWorkspaceCrawlTasks(workspaceId);
+        const hasLocalCheckpoint = fs.existsSync(queueCheckpointPath(workspaceId));
+        if (!supabaseConfigured && !hasLocalCheckpoint) return;
+        await ensureQueueRestored(workspaceId);
+        const runtime = getQueueRuntime(workspaceId);
+        const summary = {
+          browser_id: 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(),
+          restore_status: runtime.restoreStatus,
+          pending_items: runtime.state.pending_items.length,
+          completed_count: runtime.state.completed_count,
+          failed_count: runtime.state.failed_count,
+          queue_running: runtime.state.is_running,
+          source: hasLocalCheckpoint ? 'supabase_or_local_checkpoint' : 'supabase',
+        };
+        startupQueueRestoreSummary.push(summary);
+        if (runtime.state.pending_items.length > 0 && runtime.state.is_running) {
+          if (!queueRunIds.has(workspaceId)) {
+            const actionId = 'queue_recovery_' + randomUUID();
+            queueRunIds.set(workspaceId, actionId);
+            void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Queue automatically resumed after server restart', workspaceId, actionId, phase: 'start', details: { pending_items: runtime.state.pending_items.length, completed_count: runtime.state.completed_count, failed_count: runtime.state.failed_count, source: summary.source } });
+          }
+          void recordOperationalEvent(ROOT_DIR, { category: 'queue-restore', summary: 'Browser queue restored and automatic processing resumed', workspaceId, details: summary });
+        }
+      } catch (error: any) {
+        console.error('[Workspace] Startup recovery failed for', workspaceId, error.message);
+        void recordOperationalEvent(ROOT_DIR, { category: 'workspace-recovery', summary: 'Workspace startup recovery failed', workspaceId, details: { error: error.message } });
+      }
+    }));
+  }
+}
+
 async function bootstrapServer() {
-  // Queues are restored lazily when their owning browser workspace connects.
-  // This avoids loading a legacy/global queue into an arbitrary visitor's session.
+  await restoreAllWorkspaceState();
   await startServer();
 }
 
