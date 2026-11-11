@@ -520,3 +520,11 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - If a browser supplies a channel ID, the platform archive bot uploads the media once to the internal archive and forwards the stored Telegram message to that channel. Large multipart uploads forward each successfully uploaded part; there is no second file upload.
 - Added metadata restoration before owner `/userinfo`, `/workspaces`, and `/botinfos` commands, allowing known workspace IDs to be reconstructed from the Supabase workspace metadata table after an instance replacement. If the metadata row itself is absent, lookup still cannot recreate a lost browser identity.
 - The normal extraction path, downloader selection, and successful website extraction behavior are unchanged.
+
+
+### 11/11 — YouTube download validation and quality tiers
+- YouTube watch URLs no longer fall through to generic curl downloading after yt-dlp authentication/challenge failures. This prevents HTML challenge pages from being saved as tiny MP4 files.
+- Direct-download responses are checked for media signatures, and completed outputs are checked with ffprobe for an actual video stream before the queue marks them complete or Telegram receives them.
+- Added quality tiers up to 2160p, 1440p, 1080p, 720p, 480p and 360p where the source exposes those heights. Audio-only and sub-360p fragments are removed from the quality selector; requested tiers choose the best available video at or below the selected height.
+- Added secure `YTDLP_COOKIES_FROM_BROWSER` / `YTDLP_COOKIES_FILE` support for authorized YouTube sessions, plus Deno/EJS challenge runtime configuration in the download path. A valid authorized session may still be required when YouTube presents an anti-bot challenge.
+- Existing generic-site extraction and direct-media-first handling are preserved.

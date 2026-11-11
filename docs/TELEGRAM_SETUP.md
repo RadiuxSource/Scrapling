@@ -94,3 +94,12 @@ The video-delivery bot username (workspace bot if configured, otherwise `TELEGRA
 6. Redeploy the service. Open `https://YOUR-DOMAIN/owner` and sign in with `OWNER_ACCESS_SECRET`. In the log group, use `/start` to verify bot connectivity and uptime, `/help` for commands, then reply to an action message with `/logs`.
 
 If you omit `LOG_TELEGRAM_BOT_TOKEN`, owner monitoring falls back to `TELEGRAM_BOT_TOKEN`; that main bot must then have no webhook configured for owner commands to work. A dedicated log bot is safer because long polling can conflict with an existing webhook integration.
+
+
+## YouTube downloads and quality selection
+
+YouTube downloads use yt-dlp with the Deno JavaScript runtime and EJS challenge components when available. The quality menu offers 2160p, 1440p, 1080p, 720p, 480p and 360p tiers only when the source actually exposes that resolution; it never fabricates an upscale option. The selected tier downloads the best video stream at or below that height and merges the best available audio.
+
+Some YouTube requests return Google's "Sign in to confirm you're not a bot" challenge. When this happens, provide an authorized session cookie export as a secure deployment-mounted file and set `YTDLP_COOKIES_FILE` to its absolute path in Koyeb. Do not commit or paste cookie contents into GitHub or logs. Cookie exports expire and should be rotated. The engine now rejects HTML/challenge responses and validates the final file with ffprobe before marking a download complete or sending it to Telegram. It will report the authentication error rather than saving a tiny HTML response as an MP4.
+
+The archive channel is the existing `LOG_TELEGRAM_CHAT_ID` unless a separate `TELEGRAM_BACKUP_CHAT_ID` is intentionally configured.

@@ -497,8 +497,12 @@ class VideoDownloader:
             "socket_timeout": 25,
             "extractor_retries": 3,
             "file_access_retries": 3,
+            "remote_components": ["ejs:github"],
             "logger": YtDlpDownloaderLogger()
         }
+        deno_path = shutil.which("deno")
+        if deno_path:
+            ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
         # Optional user-supplied cookies for sources that require an authorized
         # session. The cookie file must be mounted/provided securely by the
