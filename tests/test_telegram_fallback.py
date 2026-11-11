@@ -1,6 +1,17 @@
 import os
+import sys
+import types
 import unittest
 from unittest.mock import patch
+
+# The CI workflow compiles the engine without installing optional runtime deps.
+# config.py only needs dotenv's no-op loader for these pure routing tests.
+try:
+    import dotenv  # noqa: F401
+except ModuleNotFoundError:
+    dotenv_stub = types.ModuleType('dotenv')
+    dotenv_stub.load_dotenv = lambda: None
+    sys.modules['dotenv'] = dotenv_stub
 
 from engine.config import resolve_telegram_delivery
 
