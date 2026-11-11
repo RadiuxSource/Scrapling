@@ -469,3 +469,8 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Queue status now reports whether Supabase backup is configured, whether the latest checkpoint is confirmed, and the last backup error.
 - Added an integration test proving that a queue is not accepted as successfully started when Supabase backup is unavailable.
 - This is fail-safe behavior for new/ongoing work. It cannot reconstruct historical queue items that were already lost before a successful remote checkpoint existed.
+
+### 11/11 — Queue status crash and downloader checkpoint gate
+- Fixed a production `ReferenceError` in `/api/nonstop-queue/status`: the route now obtains its workspace `QueueRuntime` before reading durable-backup diagnostics. This prevents status polling from terminating the Node process.
+- The queue worker now waits for Supabase confirmation of the in-flight item checkpoint before invoking the Python download runner. If the backup fails, the item is returned to the front of the pending queue and dispatch pauses; later status polling retries the checkpoint and resumes safely after it is confirmed.
+- This prevents a runner from being launched while the durable queue backup is still failing.
