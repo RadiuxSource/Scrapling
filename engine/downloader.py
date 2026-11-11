@@ -434,7 +434,8 @@ class VideoDownloader:
         report_data: dict
     ):
         """
-        Downloads streams using yt-dlp with FFmpeg remuxing and browser headers.
+        Download with yt-dlp. YouTube gets bounded public-client retries only
+        after its default extractor path fails; other sites retain one attempt.
         """
         def ydl_hook(d):
             if d.get("status") == "downloading":
@@ -442,10 +443,8 @@ class VideoDownloader:
                 downloaded = d.get("downloaded_bytes") or 0
                 speed = d.get("speed") or 0.0
                 eta = d.get("eta") or 0
-
                 pct = round((downloaded / total * 90.0), 1) if total > 0 else 0.0
                 speed_mb = round(speed / (1024 * 1024), 2)
-
                 report_progress({
                     "status": "downloading",
                     "progress_percent": min(92.0, max(5.0, pct)),
@@ -469,6 +468,8 @@ class VideoDownloader:
 
         parsed = urllib.parse.urlparse(media_url)
         origin = f"{parsed.scheme}://{parsed.netloc}/"
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        is_youtube = host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
         referer = "https://en.wikipedia.org/" if "wikimedia.org" in media_url else origin
 
         ydl_opts = {
@@ -482,10 +483,7 @@ class VideoDownloader:
                 "Accept": "*/*",
             },
             "postprocessors": [
-                {
-                    "key": "FFmpegVideoRemuxer",
-                    "preferedformat": "mp4"
-                }
+                {"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}
             ],
             "progress_hooks": [ydl_hook],
             "quiet": True,
@@ -505,9 +503,8 @@ class VideoDownloader:
         if deno_path:
             ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
-        # Optional user-supplied cookies for sources that require an authorized
-        # session. The cookie file must be mounted/provided securely by the
-        # deployment owner; never put cookie contents in source control.
+        # Optional authorized session support. No cookie is generated or
+        # required for the public-client fallback sequence below.
         cookie_file = os.environ.get("YTDLP_COOKIES_FILE")
         if cookie_file:
             cookie_path = Path(cookie_file).expanduser()
@@ -518,17 +515,66 @@ class VideoDownloader:
                 raise RuntimeError("Configured YTDLP_COOKIES_FILE is not readable.")
         browser_cookies = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
         if browser_cookies:
-            ydl_opts["cookiesfrombrowser"] = tuple(part or None for part in browser_cookies.split(":"))
+            ydl_opts["cookiesfrombrowser"] = tuple(
+                part or None for part in browser_cookies.split(":")
+            )
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(media_url, download=True)
-            if info:
-                report_data["title"] = info.get("title") or title
-                report_data["duration_seconds"] = info.get("duration")
+        # These are public YouTube player clients supported by yt-dlp. The
+        # default client set is always tried first. The extra profiles are
+        # deliberately YouTube-only and bounded so normal sites incur no cost.
+        youtube_fallback_clients = (
+            "tv",
+            "android_vr",
+            "web_embedded",
+            "web_safari",
+        )
+        attempts = [None] + (list(youtube_fallback_clients) if is_youtube else [])
+        last_error = None
+        info = None
+
+        for attempt_index, player_client in enumerate(attempts, start=1):
+            attempt_opts = dict(ydl_opts)
+            if player_client:
+                attempt_opts["extractor_args"] = {
+                    "youtube": {"player_client": [player_client]}
+                }
+                logger.warning(
+                    "YouTube default extraction failed; retrying with public player client '%s' (%d/%d).",
+                    player_client,
+                    attempt_index,
+                    len(attempts) - 1,
+                )
+
+            try:
+                with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                    info = ydl.extract_info(media_url, download=True)
+                if info:
+                    report_data["title"] = info.get("title") or title
+                    report_data["duration_seconds"] = info.get("duration")
+                    break
+                last_error = RuntimeError("yt-dlp returned no video information.")
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "yt-dlp attempt %d/%d failed%s: %s",
+                    attempt_index,
+                    len(attempts),
+                    f" using {player_client}" if player_client else "",
+                    exc,
+                )
+
+            # Remove only incomplete fragments before trying another client.
+            # Never remove a completed output produced by an earlier attempt.
+            if is_youtube and attempt_index < len(attempts):
+                for partial in self.output_dir.glob(f"{safe_title}_{timestamp}.*"):
+                    if partial.name.endswith((".part", ".ytdl")):
+                        partial.unlink(missing_ok=True)
+
+        if not info and last_error:
+            raise last_error
 
         # Normalize yt-dlp's actual output to the filename expected by the
-        # job tracker. Previously an already-MP4 output could be left under
-        # yt-dlp's own name, leaving the job stuck without a final file.
+        # job tracker. A remuxed output may use a different extension.
         if not final_filepath.exists():
             candidates = sorted(
                 (
@@ -549,7 +595,9 @@ class VideoDownloader:
                         cand.unlink(missing_ok=True)
 
         if not final_filepath.exists() or final_filepath.stat().st_size <= 1000:
-            raise RuntimeError("yt-dlp finished without producing a valid output video file.")
+            raise RuntimeError(
+                "yt-dlp finished without producing a valid output video file."
+            )
 
     @staticmethod
     def _looks_like_media_file(file_path: Path) -> bool:
