@@ -104,8 +104,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   const [formatSelections, setFormatSelections] = useState<Record<string, string>>({});
 
   const urlsList = urlsInput
-    .split('
-')
+    .split('\\n')
     .map((u) => u.trim())
     .filter((u) => u.length > 0);
 
