@@ -1251,7 +1251,8 @@ app.get('/api/downloads/stream/:filename', (req, res) => {
     };
 
     res.writeHead(206, head);
-    file.pipe(res);  } else {
+    file.pipe(res);
+  } else {
     const head = {
       'Content-Length': fileSize,
       'Content-Type': 'video/mp4',
