@@ -31,6 +31,7 @@ before(async () => {
       NODE_ENV: 'production',
       PORT: String(port),
       WORKSPACE_SECRET: 'ci-workspace-isolation-test-secret',
+      OWNER_ACCESS_SECRET: 'ci-owner-access-test-secret',
       SUPABASE_URL: '',
       SUPABASE_SERVICE_ROLE_KEY: '',
       WORKSPACE_MIGRATION_TOKEN: '',
@@ -223,4 +224,20 @@ test('nonstop queue deduplicates repeated batch submissions in the same queue ru
   assert.equal(data.duplicates_skipped, 2);
   assert.equal(data.queue.total, 2);
   assert.match(data.message, /no duplicates were added/i);
+});
+
+
+test('owner remember-me login survives reload with a 30-day signed session cookie', async () => {
+  const login = await fetch(`${baseUrl}/api/owner/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ secret: 'ci-owner-access-test-secret', remember_me: true }),
+  });
+  assert.equal(login.status, 200);
+  const setCookie = login.headers.get('set-cookie') || '';
+  const match = setCookie.match(/vortex_owner=([^;]+)/);
+  assert.ok(match, 'owner login must issue an HttpOnly session cookie');
+  assert.match(setCookie, /Max-Age=2592000/);
+  const session = await fetch(`${baseUrl}/api/owner/session`, { headers: { cookie: `vortex_owner=${match[1]}` } });
+  assert.equal(session.status, 200);
+  assert.equal((await session.json()).authenticated, true);
 });
