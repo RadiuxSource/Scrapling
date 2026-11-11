@@ -682,6 +682,9 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
         queueStorageWarningShown = true;
         addLog('error', `${runtime.lastRemoteSaveError} Queue processing is paused until durable backup is available.`);
       }
+      // Keep retrying so a temporarily missing or late-injected configuration
+      // can recover without requiring another browser action or queue submission.
+      scheduleQueueBackupRetry(workspaceId);
       return;
     }
 
