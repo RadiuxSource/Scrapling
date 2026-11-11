@@ -16,11 +16,42 @@ import {
   Settings
 } from './types';
 
+function restoreCrawlResult(data: any): { videos: ScrapedVideo[]; report: InspectionReport | null } {
+  let payload = data;
+  for (let depth = 0; depth < 3; depth++) {
+    if (payload?.result && typeof payload.result === 'object') payload = payload.result;
+    else if (payload?.data && typeof payload.data === 'object' && !Array.isArray(payload.data)) payload = payload.data;
+    else break;
+  }
+  const rawReports = Array.isArray(payload?.results) ? payload.results
+    : Array.isArray(payload?.reports) ? payload.reports
+    : Array.isArray(payload?.data?.results) ? payload.data.results
+    : (Array.isArray(payload?.videos) ? [payload] : []);
+  const rawVideos = rawReports.flatMap((rep: any) => Array.isArray(rep?.videos) ? rep.videos : []);
+  const videos: ScrapedVideo[] = rawVideos.filter((v: any) => v && (v.media_url || v.url)).map((v: any, index: number) => ({
+    ...v,
+    id: String(v.id || v.media_url || v.url || `crawl-video-${index}`),
+    title: String(v.title || v.name || `Video ${index + 1}`),
+    media_url: String(v.media_url || v.url),
+    page_url: String(v.page_url || v.source_url || ''),
+    resolution: String(v.resolution || 'Adaptive'),
+    format: String(v.format || 'MP4'),
+    protocol: String(v.protocol || 'Stream'),
+    formats_available: Array.isArray(v.formats_available) ? v.formats_available : []
+  }));
+  const first = rawReports[0];
+  return {
+    videos,
+    report: first ? { ...first, videos: Array.isArray(first.videos) ? first.videos : [] } : null
+  };
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'console' | 'queue' | 'files' | 'telegram' | 'logs'>('console');
   const [urlsInput, setUrlsInput] = useState<string>('https://en.wikipedia.org/wiki/Big_Buck_Bunny');
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [isScraping, setIsScraping] = useState<boolean>(false);
+  const [crawlRecovery, setCrawlRecovery] = useState<any | null>(null);
   const [operationMessage, setOperationMessage] = useState<string>('');
   const [operationError, setOperationError] = useState<string>('');
   const [deepCrawl, setDeepCrawl] = useState<boolean>(true);
@@ -139,6 +170,29 @@ export default function App() {
     }
   }, []);
 
+  const fetchCrawlHistory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/scrape/tasks');
+      const data = await res.json();
+      if (!res.ok || !data.success || !Array.isArray(data.tasks) || data.tasks.length === 0) return;
+      const latest = data.tasks[0];
+      setCrawlRecovery(latest);
+      if (latest.request?.urls?.length) {
+        setUrlsInput(latest.request.urls.join('\n'));
+        setDeepCrawl(latest.request.deep_crawl !== false);
+        if (typeof latest.request.max_subpages === 'number') setMaxCrawlVideos(latest.request.max_subpages);
+      }
+      if (latest.status === 'completed' && latest.result) {
+        const restored = restoreCrawlResult(latest.result);
+        setVideos(restored.videos);
+        setInspectionReport(restored.report);
+        setOperationMessage(restored.videos.length ? 'Previous crawl results restored for this browser workspace.' : '');
+      }
+    } catch (e) {
+      console.error('Failed to restore crawl history', e);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSettings();
     fetchJobs();
@@ -146,7 +200,8 @@ export default function App() {
     fetchQueueRestoreStatus();
     fetchFiles();
     fetchLogs();
-  }, [fetchSettings, fetchJobs, fetchNonstopStatus, fetchQueueRestoreStatus, fetchFiles, fetchLogs]);
+    fetchCrawlHistory();
+  }, [fetchSettings, fetchJobs, fetchNonstopStatus, fetchQueueRestoreStatus, fetchFiles, fetchLogs, fetchCrawlHistory]);
 
   useEffect(() => {
     if (queueRestore.status !== 'success' && queueRestore.status !== 'cancelled') return;
@@ -155,6 +210,39 @@ export default function App() {
     }, 5000);
     return () => window.clearTimeout(timeout);
   }, [queueRestore.status]);
+
+  // Reconnect this browser to a crawl that is still running after a tab reload.
+  useEffect(() => {
+    if (!crawlRecovery || crawlRecovery.status !== 'running') return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/scrape/status/${encodeURIComponent(crawlRecovery.task_id)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        if (data.status === 'completed' && data.result) {
+          const restored = restoreCrawlResult(data.result);
+          setVideos(restored.videos);
+          setInspectionReport(restored.report);
+          setIsScraping(false);
+          setOperationMessage(`Crawl reconnected and completed. ${restored.videos.length} video(s) restored.`);
+          setCrawlRecovery((current: any) => current?.task_id === crawlRecovery.task_id ? { ...current, status: 'completed', result: data.result, finished_at: data.finished_at } : current);
+          fetchLogs();
+        } else if (data.status === 'failed') {
+          setIsScraping(false);
+          setOperationError(data.error || 'The previous crawl failed.');
+          setCrawlRecovery((current: any) => current?.task_id === crawlRecovery.task_id ? { ...current, status: 'failed', error: data.error } : current);
+        }
+      } catch (error) {
+        console.error('Could not reconnect to previous crawl', error);
+      }
+    };
+    setIsScraping(true);
+    setOperationMessage('Reconnecting to your previous crawl…');
+    void poll();
+    const interval = window.setInterval(() => { void poll(); }, 1500);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [crawlRecovery?.task_id, crawlRecovery?.status, fetchLogs]);
 
   // Polling for jobs and nonstop queue
   useEffect(() => {
@@ -240,11 +328,8 @@ export default function App() {
   };
 
   // Start Batch Scraping & Deep Crawl action with pagination support
-  const handleStartScraping = async (offset = 0, customMaxSubpages?: number, append = false) => {
-    const urls = urlsInput
-      .split('\n')
-      .map((u) => u.trim())
-      .filter((u) => u.length > 0);
+  const handleStartScraping = async (offset = 0, customMaxSubpages?: number, append = false, resumeRequest?: { urls: string[]; deep_crawl: boolean; max_subpages: number; subpage_offset: number }) => {
+    const urls = (resumeRequest?.urls || urlsInput.split('\n')).map((u) => u.trim()).filter((u) => u.length > 0);
 
     if (urls.length === 0) return;
 
@@ -257,15 +342,15 @@ export default function App() {
     }
 
     try {
-      const subpagesLimit = customMaxSubpages !== undefined ? customMaxSubpages : maxCrawlVideos;
+      const subpagesLimit = resumeRequest?.max_subpages ?? (customMaxSubpages !== undefined ? customMaxSubpages : maxCrawlVideos);
       const startRes = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           urls,
-          deep_crawl: deepCrawl,
+          deep_crawl: resumeRequest?.deep_crawl ?? deepCrawl,
           max_subpages: subpagesLimit,
-          subpage_offset: offset
+          subpage_offset: resumeRequest?.subpage_offset ?? offset
         })
       });
       const startData = await startRes.json().catch(() => ({}));
@@ -365,6 +450,16 @@ export default function App() {
       fetchFiles();
       fetchJobs();
     }
+  };
+
+  const handleResumeLastCrawl = () => {
+    const request = crawlRecovery?.request;
+    if (!request?.urls?.length || crawlRecovery.status === 'running') return;
+    setUrlsInput(request.urls.join('\n'));
+    setDeepCrawl(request.deep_crawl !== false);
+    setMaxCrawlVideos(request.max_subpages);
+    setCrawlRecovery(null);
+    void handleStartScraping(request.subpage_offset || 0, request.max_subpages, false, request);
   };
 
   // Dedicated "Load Next 100 Videos" action
@@ -617,6 +712,8 @@ export default function App() {
             isScraping={isScraping}
             onTestWebsite={handleTestWebsite}
             onStartScraping={() => handleStartScraping(0, maxCrawlVideos, false)}
+            crawlRecovery={crawlRecovery}
+            onResumeCrawl={handleResumeLastCrawl}
             onLoadNextBatch={handleLoadNextBatch}
             onCrawlAllSubpages={handleCrawlAllSubpages}
             inspectionReport={inspectionReport}
