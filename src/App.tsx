@@ -808,6 +808,6 @@ function WorkspaceApp() {
 }
 
 export default function App() {
-  if (window.location.pathname.replace(/\\/$/, '') === '/owner') return <OwnerDashboard />;
+  if (window.location.pathname.replace(/\/$/, '') === '/owner') return <OwnerDashboard />;
   return <WorkspaceApp />;
 }
