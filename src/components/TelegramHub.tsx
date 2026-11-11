@@ -68,11 +68,11 @@ export const TelegramHub: React.FC<TelegramHubProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="vortex-view vortex-view-telegram space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
         <div>
-          <h2 className="text-base font-semibold text-white">Telegram Bot & Channel Hub</h2>
+          <h1 className="text-base font-semibold text-white">Telegram Bot & Channel Hub</h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Configure automated alerts, inspection test reports, and queue-based video uploads.
           </p>

@@ -158,7 +158,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   });
 
   return (
-    <div className="space-y-6">
+    <div className="vortex-view vortex-view-console space-y-6">
       {queueRestore?.status === 'restoring' && (
         <div className="rounded-lg border border-cyan-500/40 bg-cyan-950/30 px-4 py-3 flex items-center gap-3" role="status">
           <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse shrink-0" />
@@ -235,7 +235,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
           <div>
-            <h2 className="text-sm font-semibold text-white">Target Website URL(s)</h2>
+            <h1 className="text-sm font-semibold text-white">Target Website URL(s)</h1>
             <p className="text-xs text-slate-400 mt-0.5">
               Enter any website homepage, video gallery, channel, or direct link. The deep crawler will inspect all subpages.
             </p>

@@ -26,11 +26,11 @@ export const LogsViewer: React.FC<LogsViewerProps> = ({ logs, onRefresh }) => {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="vortex-view vortex-view-logs space-y-4">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
         <div>
-          <h2 className="text-base font-semibold text-white">Engine Output & Diagnostics</h2>
+          <h1 className="text-base font-semibold text-white">Engine Output & Diagnostics</h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Real-time stdout/stderr stream from Scrapling, yt-dlp, and FFmpeg remux processes.
           </p>

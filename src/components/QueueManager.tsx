@@ -43,7 +43,7 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
   ).length;
 
   return (
-    <div className="space-y-6">
+    <div className="vortex-view vortex-view-queue space-y-6">
       {/* Nonstop Auto-pilot Live Banner */}
       {nonstopStatus && nonstopStatus.is_running && (
         <div className="bg-gradient-to-r from-emerald-950/80 via-slate-900 to-teal-950/80 border border-emerald-500/50 rounded-xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
@@ -84,7 +84,7 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
         <div>
-          <h2 className="text-base font-semibold text-white">Media Download Queue</h2>
+          <h1 className="text-base font-semibold text-white">Media Download Queue</h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Real-time download progress, stream merging, and FFmpeg MP4 remuxing status.
           </p>

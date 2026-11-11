@@ -100,11 +100,11 @@ export const FileManager: React.FC<FileManagerProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="vortex-view vortex-view-library space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
         <div>
-          <h2 className="text-base font-semibold text-white">Downloaded MP4 Files</h2>
+          <h1 className="text-base font-semibold text-white">Downloaded MP4 Files</h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Local storage folder. In-browser player, disk downloads, and high-capacity Telegram upload.
           </p>

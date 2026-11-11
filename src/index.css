@@ -105,6 +105,64 @@
 .vortex-primary-action:hover { background: #d4fa8b; box-shadow: 0 5px 18px #c6f36a20; }
 .vortex-primary-action:active { transform: translateY(1px); }
 .vortex-main > div { min-width: 0; }
+.vortex-view { min-width: 0; }
+.vortex-view h1 {
+  margin: 0;
+  color: var(--vortex-text);
+  font-size: clamp(1.12rem, 1.55vw, 1.38rem);
+  font-weight: 650;
+  letter-spacing: -.035em;
+  line-height: 1.2;
+}
+.vortex-view h3 { letter-spacing: -.018em; }
+.vortex-view p { line-height: 1.55; }
+.vortex-view button:not(:disabled):hover { filter: brightness(1.08); }
+.vortex-view button:active:not(:disabled) { transform: translateY(1px); }
+.vortex-view input, .vortex-view textarea, .vortex-view select {
+  min-height: 40px;
+  border-radius: 8px;
+}
+.vortex-view textarea { min-height: 132px; line-height: 1.65; }
+.vortex-view-console > div[class*="bg-slate-900"] {
+  border-color: #394638;
+}
+.vortex-view-console > div[class*="bg-slate-900"] textarea {
+  font-size: 12px;
+  padding: 15px 16px;
+}
+.vortex-view-console > div[class*="overflow-hidden"] > div:first-child {
+  background: #151b15;
+}
+.vortex-view-queue > div.space-y-3 > div {
+  background: #171e18;
+  border-color: #354035;
+}
+.vortex-view-queue > div.space-y-3 > div:hover {
+  border-color: #4a5b43;
+}
+.vortex-view-library > div[class*="overflow-hidden"] {
+  background: #171e18;
+}
+.vortex-view-library > div[class*="overflow-hidden"] > div > div:hover {
+  background: #202920;
+}
+.vortex-view-logs > div[class*="overflow-hidden"] {
+  border-color: #3a463a;
+}
+.vortex-view-logs > div[class*="overflow-hidden"] > div:first-child {
+  background: #171e18;
+}
+.vortex-view-logs > div[class*="overflow-y-auto"] {
+  line-height: 1.75;
+}
+.vortex-view-telegram label {
+  letter-spacing: .005em;
+}
+.vortex-view-telegram input {
+  min-height: 44px;
+  padding-inline: 13px;
+}
+.vortex-view-telegram form button { min-height: 44px; }
 
 /* Translate the existing utility-based screens into the Vortex material system. */
 .bg-slate-950 { background-color: var(--vortex-recessed) !important; }
@@ -163,16 +221,16 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   }
   .vortex-brand-mark { width: 34px; height: 34px; }
   .vortex-brand-name { font-size: 14px; }
-  .vortex-primary-action { min-height: 40px; padding-inline: 12px; }
+  .vortex-primary-action { min-height: 44px; padding-inline: 12px; }
   .vortex-primary-action span { font-size: 11px; }
   .vortex-nav {
     grid-column: 1 / -1; width: calc(100% + 32px); margin-inline: -16px; padding: 0 16px 2px;
     overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
   }
   .vortex-nav::-webkit-scrollbar { display: none; }
-  .vortex-nav-item { min-height: 42px; padding-inline: 12px; }
+  .vortex-nav-item { min-height: 44px; padding-inline: 12px; }
   .vortex-main { width: 100%; padding: 22px 16px 56px; }
-  .vortex-main .flex-col { min-width: 0; }
+  .vortex-main .flex-col { min-width: 0; }\n  .vortex-main button:not(:disabled) { min-height: 44px; }\n  .vortex-main input, .vortex-main select { min-height: 44px; }
 }
 @media (max-width: 420px) {
   .vortex-header-inner { padding-inline: 12px; }
