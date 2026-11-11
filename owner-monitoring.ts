@@ -12,6 +12,7 @@ type OwnerOptions = {
 
 const COOKIE = 'vortex_owner';
 const SESSION_TTL = 12 * 60 * 60 * 1000;
+const REMEMBER_SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
 const OWNER_SECRET = (process.env.OWNER_ACCESS_SECRET || '').trim();
 const OWNER_TELEGRAM_ID = (process.env.OWNER_TELEGRAM_USER_ID || '').trim();
 const LOG_CHAT_ID = (process.env.LOG_TELEGRAM_CHAT_ID || '').trim();
@@ -46,7 +47,7 @@ function workspaceRoot(root: string, id: string) { return path.join(root, 'data'
 function metaFile(root: string, id: string) { return path.join(workspaceRoot(root, id), 'workspace.json'); }
 function mask(value: string) { if (!value) return null; return value.length <= 8 ? '••••' : value.slice(0, 4) + '••••' + value.slice(-4); }
 function sign(value: string) { return createHmac('sha256', OWNER_SECRET).update(value).digest('hex'); }
-function issueSession() { const expires = Date.now() + SESSION_TTL; const payload = String(expires); return payload + '.' + sign(payload); }
+function issueSession(ttl = SESSION_TTL) { const expires = Date.now() + ttl; const payload = String(expires); return payload + '.' + sign(payload); }
 function validSession(value: string) {
   if (!OWNER_SECRET) return false;
   const [expires, signature] = value.split('.');
@@ -312,11 +313,16 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     const supplied = typeof req.body?.secret === 'string' ? req.body.secret : '';
     const expected = Buffer.from(OWNER_SECRET), actual = Buffer.from(supplied);
     if (!OWNER_SECRET || expected.length !== actual.length || !timingSafeEqual(expected, actual)) return res.status(401).json({ success: false, error: 'Invalid owner secret.' });
-    const session = issueSession();
+    const rememberMe = req.body?.remember_me === true;
+    const sessionTtl = rememberMe ? REMEMBER_SESSION_TTL : SESSION_TTL;
+    const session = issueSession(sessionTtl);
     const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0].trim();
     const secure = req.secure || forwardedProto === 'https' ? '; Secure' : '';
-    res.setHeader('Set-Cookie', COOKIE + '=' + encodeURIComponent(session) + '; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=' + Math.floor(SESSION_TTL / 1000));
-    res.json({ success: true, expires_at: Date.now() + SESSION_TTL });
+    res.setHeader('Set-Cookie', COOKIE + '=' + encodeURIComponent(session) + '; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=' + Math.floor(sessionTtl / 1000));
+    res.json({ success: true, remember_me: rememberMe, expires_at: Date.now() + sessionTtl });
+  });
+  app.get('/api/owner/session', ownerMiddleware, (_req: Request, res: Response) => {
+    res.json({ success: true, authenticated: true });
   });
   app.post('/api/owner/logout', ownerMiddleware, (req: Request, res: Response) => {
     const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0].trim();

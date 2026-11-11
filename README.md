@@ -327,14 +327,16 @@ The API is intended to be used by the Vortex frontend. Data-bearing API routes u
 
 ## Fix log
 
-### 11/11 — Browser-specific crawler recovery
+### 11/11/2026 — Consolidated changes
+
+#### Browser-specific crawler recovery
 - Persisted each crawl's original URLs and crawl settings alongside its workspace-private task record.
 - Added `GET /api/scrape/tasks` to restore the latest crawl for the signed browser workspace only; the endpoint returns only the latest task to avoid sending unnecessary historical result payloads.
 - On a tab reload, the Scraper Console restores completed crawl results and the original target URLs. If the crawl is still running on the server, the page reconnects to its existing task and waits for the result instead of starting a duplicate crawl.
 - If the server restarted mid-crawl, the task is marked interrupted and the console offers **Resume crawl**, which restarts that crawl using its saved URLs and settings. A mid-crawl Python process cannot be continued from its exact in-memory position; resume safely reruns the saved crawl request from its beginning.
 - Crawl task history and recovery remain isolated by browser workspace. The video extraction implementation and nonstop download queue recovery were not changed.
 
-### 11/11 — Privacy isolation (incremental rollout)
+#### Privacy isolation (incremental rollout)
 - **Phase 1 implemented:** added a signed, anonymous browser workspace cookie and separated the in-memory Logs feed by workspace. No login or registration is required.
 - **Phase 2 implemented:** download-job records are held in workspace-specific in-memory maps. The Jobs API, cancel, delete, and clear-finished actions operate only on the requesting browser's jobs; process cancellation checks the owning workspace.
 - **Phase 3 implemented:** nonstop queues are isolated by browser workspace. Queue status, enqueue, stop, restore status, and restore cancellation are workspace-scoped. Local checkpoints use workspace-specific filenames, and Supabase snapshots use `ws_<workspace-id>` row IDs.
@@ -411,6 +413,54 @@ The API is intended to be used by the Vortex frontend. Data-bearing API routes u
 - Added troubleshooting steps for `PGRST125` / HTTP 404 invalid REST paths.
 - The earlier queue restore UI includes a cancellable “Restoring queue…” notice and a temporary success confirmation. End-to-end restore still needs to be verified against the configured Supabase project after redeployment.
 
+#### Owner monitoring and Telegram operations
+
+- Added the protected owner API and Telegram command foundation for browser workspace inventory, detailed sanitized `/userinfo` reports, `/botinfos`, and reply-to-message `/logs` exports.
+- Added stable pseudonymous Browser IDs (`BRW-…`) and persistent workspace created/last-seen timestamps.
+- Added server lifecycle, queue restoration, crawl lifecycle, and download lifecycle operational events with per-action text logs and Telegram start/end message indexing.
+- Added saved crawl-request replay through `POST /api/scrape/resume/:id`. This re-runs the saved request; it does not restore an interrupted Python process's exact in-memory position.
+- Added a public default-bot identity endpoint that returns the bot username only, never the token.
+- Added owner monitoring environment variable documentation. Raw bot tokens and API hashes are masked in owner exports.
+
+- Added the private `/owner` Control Center with secret-based login, cross-browser workspace inspection, friendly workspace names, task stopping, and saved crawl-request replay.
+- Server startup now scans persisted browser workspaces and restores saved queue state automatically; the log group receives per-browser restore outcomes and a startup recovery summary.
+- Queue lifecycle messages distinguish normal completion, completion with failures, user termination, owner termination, and server-restart interruption.
+- The Telegram fallback matrix is enforced in the Python engine: complete custom bot/channel pair uses both; channel-only uses the deployment default bot with that channel; bot-only or neither uses the deployment default bot and log group.
+- A custom channel setup triggers Bot API verification and invite-link creation. The bot/channel names, IDs, invite link, and masked credential status are included in `/botinfos`.
+- If the log destination is a forum-enabled supergroup, the monitoring bot attempts to create a dedicated **Vortex Operational Logs** topic. It falls back to the main group if topic creation or delivery is unavailable.
+- See [Telegram setup and Koyeb environment instructions](docs/TELEGRAM_SETUP.md). The Bot API cannot create a new group; the group owner must create it and add the bot.
+
+
+#### Durable queue backup and restart-recovery diagnostics
+- Corrected the Supabase queue write to use PostgREST's explicit `on_conflict=id` upsert instead of attaching a row filter to a POST request.
+- Queue backups now request the persisted representation and verify that the expected `ws_<workspace-id>` row was returned. A failed or unverifiable remote write is logged instead of being treated as a confirmed backup.
+- When a workspace row is missing, recovery checks whether the old shared `main` queue still exists. It never assigns that queue automatically; the restore message explains that the original owner must use the one-time migration claim.
+- Restore status now includes the current pseudonymous Browser ID and workspace key, and distinguishes a genuinely missing workspace checkpoint from an available legacy queue. This helps identify a changed browser cookie or `WORKSPACE_SECRET`.
+- The normal download/extraction path is unchanged. A running item is still retried from its source URL after restart; partially downloaded bytes are not recoverable.
+
+
+#### Require durable queue backup before processing
+- Queue persistence now retries transient Supabase failures up to three times (with a timeout on each attempt) and verifies that Supabase returned the exact checkpoint timestamp written for the browser workspace.
+- The nonstop queue API now returns HTTP 503 instead of claiming success when the remote checkpoint cannot be confirmed. The pending items remain visible in the current process, but automatic processing is paused until a later verified backup succeeds.
+- A queue restored after restart is also held until its recovered state has been written and verified in Supabase. This prevents the worker from immediately advancing a queue whose recovery checkpoint cannot be made durable.
+- Queue status now reports whether Supabase backup is configured, whether the latest checkpoint is confirmed, and the last backup error.
+- Added an integration test proving that a queue is not accepted as successfully started when Supabase backup is unavailable.
+- This is fail-safe behavior for new/ongoing work. It cannot reconstruct historical queue items that were already lost before a successful remote checkpoint existed.
+
+#### Queue status crash and downloader checkpoint gate
+- Fixed a production `ReferenceError` in `/api/nonstop-queue/status`: the route now obtains its workspace `QueueRuntime` before reading durable-backup diagnostics. This prevents status polling from terminating the Node process.
+- The queue worker now waits for Supabase confirmation of the in-flight item checkpoint before invoking the Python download runner. If the backup fails, the item is returned to the front of the pending queue and dispatch pauses; later status polling retries the checkpoint and resumes safely after it is confirmed.
+- This prevents a runner from being launched while the durable queue backup is still failing.
+
+
+#### Telegram owner start/help and robust queue schema migration
+- Added `/start` with live server status, process uptime, start timestamp, Node.js version, and known browser workspace count.
+- Expanded `/help` with command descriptions, usage, and the required owner/group authorization scope; registered the commands with Telegram so they appear in the bot command menu.
+- Normalized commands such as `/start@BotName` and made command matching exact.
+- Improved startup diagnostics to identify each missing monitoring environment variable, including the required log group ID.
+- Hardened the Supabase schema migration: it discovers and removes any legacy CHECK constraint attached to the queue table's `id` column, rather than assuming the constraint has one particular name.
+- **Action required:** rerun the updated `supabase-queue-schema.sql` in Supabase SQL Editor to remove the existing constraint rejecting `ws_<uuid>` rows.
+
 ## Responsible use
 
 Use Vortex only with websites and media you are authorized to access, download, and redistribute. Respect copyright, site terms, privacy, and applicable laws. Do not use the software to bypass access controls or download content without permission.
@@ -435,51 +485,8 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 
 </div>
 
-
-## 11/11/2026 — Owner monitoring and Telegram operations
-
-- Added the protected owner API and Telegram command foundation for browser workspace inventory, detailed sanitized `/userinfo` reports, `/botinfos`, and reply-to-message `/logs` exports.
-- Added stable pseudonymous Browser IDs (`BRW-…`) and persistent workspace created/last-seen timestamps.
-- Added server lifecycle, queue restoration, crawl lifecycle, and download lifecycle operational events with per-action text logs and Telegram start/end message indexing.
-- Added saved crawl-request replay through `POST /api/scrape/resume/:id`. This re-runs the saved request; it does not restore an interrupted Python process's exact in-memory position.
-- Added a public default-bot identity endpoint that returns the bot username only, never the token.
-- Added owner monitoring environment variable documentation. Raw bot tokens and API hashes are masked in owner exports.
-
-- Added the private `/owner` Control Center with secret-based login, cross-browser workspace inspection, friendly workspace names, task stopping, and saved crawl-request replay.
-- Server startup now scans persisted browser workspaces and restores saved queue state automatically; the log group receives per-browser restore outcomes and a startup recovery summary.
-- Queue lifecycle messages distinguish normal completion, completion with failures, user termination, owner termination, and server-restart interruption.
-- The Telegram fallback matrix is enforced in the Python engine: complete custom bot/channel pair uses both; channel-only uses the deployment default bot with that channel; bot-only or neither uses the deployment default bot and log group.
-- A custom channel setup triggers Bot API verification and invite-link creation. The bot/channel names, IDs, invite link, and masked credential status are included in `/botinfos`.
-- If the log destination is a forum-enabled supergroup, the monitoring bot attempts to create a dedicated **Vortex Operational Logs** topic. It falls back to the main group if topic creation or delivery is unavailable.
-- See [Telegram setup and Koyeb environment instructions](docs/TELEGRAM_SETUP.md). The Bot API cannot create a new group; the group owner must create it and add the bot.
-
-
-### 11/11 — Durable queue backup and restart-recovery diagnostics
-- Corrected the Supabase queue write to use PostgREST's explicit `on_conflict=id` upsert instead of attaching a row filter to a POST request.
-- Queue backups now request the persisted representation and verify that the expected `ws_<workspace-id>` row was returned. A failed or unverifiable remote write is logged instead of being treated as a confirmed backup.
-- When a workspace row is missing, recovery checks whether the old shared `main` queue still exists. It never assigns that queue automatically; the restore message explains that the original owner must use the one-time migration claim.
-- Restore status now includes the current pseudonymous Browser ID and workspace key, and distinguishes a genuinely missing workspace checkpoint from an available legacy queue. This helps identify a changed browser cookie or `WORKSPACE_SECRET`.
-- The normal download/extraction path is unchanged. A running item is still retried from its source URL after restart; partially downloaded bytes are not recoverable.
-
-
-### 11/11 — Require durable queue backup before processing
-- Queue persistence now retries transient Supabase failures up to three times (with a timeout on each attempt) and verifies that Supabase returned the exact checkpoint timestamp written for the browser workspace.
-- The nonstop queue API now returns HTTP 503 instead of claiming success when the remote checkpoint cannot be confirmed. The pending items remain visible in the current process, but automatic processing is paused until a later verified backup succeeds.
-- A queue restored after restart is also held until its recovered state has been written and verified in Supabase. This prevents the worker from immediately advancing a queue whose recovery checkpoint cannot be made durable.
-- Queue status now reports whether Supabase backup is configured, whether the latest checkpoint is confirmed, and the last backup error.
-- Added an integration test proving that a queue is not accepted as successfully started when Supabase backup is unavailable.
-- This is fail-safe behavior for new/ongoing work. It cannot reconstruct historical queue items that were already lost before a successful remote checkpoint existed.
-
-### 11/11 — Queue status crash and downloader checkpoint gate
-- Fixed a production `ReferenceError` in `/api/nonstop-queue/status`: the route now obtains its workspace `QueueRuntime` before reading durable-backup diagnostics. This prevents status polling from terminating the Node process.
-- The queue worker now waits for Supabase confirmation of the in-flight item checkpoint before invoking the Python download runner. If the backup fails, the item is returned to the front of the pending queue and dispatch pauses; later status polling retries the checkpoint and resumes safely after it is confirmed.
-- This prevents a runner from being launched while the durable queue backup is still failing.
-
-
-### 11/11 — Telegram owner start/help and robust queue schema migration
-- Added `/start` with live server status, process uptime, start timestamp, Node.js version, and known browser workspace count.
-- Expanded `/help` with command descriptions, usage, and the required owner/group authorization scope; registered the commands with Telegram so they appear in the bot command menu.
-- Normalized commands such as `/start@BotName` and made command matching exact.
-- Improved startup diagnostics to identify each missing monitoring environment variable, including the required log group ID.
-- Hardened the Supabase schema migration: it discovers and removes any legacy CHECK constraint attached to the queue table's `id` column, rather than assuming the constraint has one particular name.
-- **Action required:** rerun the updated `supabase-queue-schema.sql` in Supabase SQL Editor to remove the existing constraint rejecting `ws_<uuid>` rows.
+#### Owner session and queue de-duplication follow-up
+- Added an optional **Remember me** choice to owner login. It creates a signed, HttpOnly cookie valid for 30 days; standard sessions remain 12 hours. The owner page checks the existing session on load so refreshes and reopened tabs restore the dashboard until expiry or sign-out.
+- Nonstop queue submissions now deduplicate video URLs across the entire active queue run, including pending, in-progress and completed items. The URL set is saved in each queue checkpoint and restored after a server restart. Repeated submissions no longer inflate a 100-video batch into 200 or 300 entries; the API reports duplicates skipped.
+- Added an integration test for repeated batch submissions.
+- The Supabase `23514` constraint error still requires running the updated `supabase-queue-schema.sql` in the actual Supabase SQL Editor. A Git commit cannot alter the live database. The legacy `main` row is intentionally retained and requires a separate owner-authorized claim from the original browser workspace.

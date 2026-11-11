@@ -27,7 +27,7 @@ begin
     from pg_constraint
     where conrelid = 'public.vortex_queue_state'::regclass
       and contype = 'c'
-      and id_attnum = any(conkey)
+      and (id_attnum = any(conkey) or pg_get_constraintdef(oid) ilike '%id%' or pg_get_constraintdef(oid) ilike '%main%')
   loop
     execute format('alter table public.vortex_queue_state drop constraint %I', constraint_row.conname);
   end loop;

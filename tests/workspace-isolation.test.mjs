@@ -202,3 +202,25 @@ test('nonstop queue is not accepted without a verified durable Supabase backup',
   assert.equal(queue.is_running, true);
   assert.equal(queue.durable_backup.confirmed, false);
 });
+
+
+test('nonstop queue deduplicates repeated batch submissions in the same queue run', async () => {
+  const initial = await fetch(`${baseUrl}/api/nonstop-queue/status`);
+  const cookie = cookieFrom(initial);
+  const batch = [
+    { media_url: 'https://example.com/repeat-one.mp4', title: 'Repeat one' },
+    { media_url: 'https://example.com/repeat-two.mp4', title: 'Repeat two' },
+  ];
+  const first = await request('/api/download-all-nonstop', cookie, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ videos: batch }),
+  });
+  assert.equal(first.status, 503, 'the CI server has no Supabase backup configured');
+  const second = await request('/api/download-all-nonstop', cookie, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ videos: batch }),
+  });
+  assert.equal(second.status, 503);
+  const data = await second.json();
+  assert.equal(data.duplicates_skipped, 2);
+  assert.equal(data.queue.total, 2);
+  assert.match(data.message, /no duplicates were added/i);
+});

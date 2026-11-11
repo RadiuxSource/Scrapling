@@ -538,6 +538,7 @@ type QueueRestoreStatus = 'idle' | 'restoring' | 'success' | 'cancelled' | 'erro
 interface QueueRuntime {
   state: NonstopQueueState;
   currentItem: QueueItem | null;
+  queuedUrlKeys: Set<string>;
   saveChain: Promise<void>;
   latestQueueMutationAt: number;
   lastRemoteSaveAt: number;
@@ -559,6 +560,7 @@ function createQueueRuntime(): QueueRuntime {
   return {
     state: { is_running: false, total_items: 0, current_index: 0, current_title: '', completed_count: 0, failed_count: 0, pending_items: [] },
     currentItem: null,
+    queuedUrlKeys: new Set<string>(),
     saveChain: Promise.resolve(),
     latestQueueMutationAt: 0,
     lastRemoteSaveAt: 0,
@@ -580,6 +582,11 @@ function getQueueRuntime(workspaceId = getWorkspaceId()): QueueRuntime {
     queueRuntimes.set(workspaceId, runtime);
   }
   return runtime;
+}
+function queueItemKey(mediaUrl: string): string {
+  const raw = String(mediaUrl || '').trim();
+  try { const parsed = new URL(raw); parsed.hash = ''; parsed.hostname = parsed.hostname.toLowerCase(); return parsed.toString(); }
+  catch { return raw; }
 }
 function queueWorkspaceRowId(workspaceId: string): string {
   return `ws_${workspaceId}`;
@@ -629,6 +636,7 @@ function persistNonstopQueueState(workspaceId = getWorkspaceId(), forceResume = 
     pending_items: [...queue.pending_items],
     current_item: runtime.currentItem,
     queue_action_id: queueRunIds.get(workspaceId) || null,
+    queue_item_keys: Array.from(runtime.queuedUrlKeys),
     saved_at: Date.now(),
   };
   runtime.latestQueueMutationAt = state.saved_at;
@@ -772,6 +780,7 @@ async function restoreNonstopQueueState(workspaceId: string): Promise<void> {
       runtime.state.failed_count = Number(saved.failed_count) || 0;
       runtime.state.current_title = '';
       runtime.currentItem = null;
+      runtime.queuedUrlKeys = new Set(Array.isArray(saved.queue_item_keys) ? saved.queue_item_keys.filter((key: any) => typeof key === 'string') : [...interrupted, ...runtime.state.pending_items].map((item: any) => queueItemKey(item.media_url)));
       runtime.state.is_running = runtime.state.pending_items.length > 0;
       if (runtime.state.pending_items.length) addLog('warn', `Recovered ${runtime.state.pending_items.length} unfinished download(s) for this browser workspace; automatic resume is enabled.`);
       // A local checkpoint is still a valid recovery source when Supabase is
@@ -833,6 +842,8 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
           void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser nonstop queue completed', workspaceId, actionId: completedRunId, phase: 'end', details: { completed_count: queue.completed_count, failed_count: queue.failed_count, pending_count: 0, outcome: queue.failed_count > 0 ? 'completed_with_failures' : 'completed' } });
           queueRunIds.delete(workspaceId);
         }
+        runtime.queuedUrlKeys.clear();
+        await persistNonstopQueueState(workspaceId);
         return;
       }
 
@@ -920,6 +931,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
           void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser nonstop queue completed', workspaceId, actionId: completedRunId, phase: 'end', details: { completed_count: queue.completed_count, failed_count: queue.failed_count, pending_count: 0, outcome: 'completed' } });
           queueRunIds.delete(workspaceId);
         }
+        runtime.queuedUrlKeys.clear();
       }
       await persistNonstopQueueState(workspaceId);
     } finally {
@@ -1378,12 +1390,25 @@ app.post('/api/download-all-nonstop', async (req, res) => {
   await ensureQueueRestored(workspaceId);
   const runtime = getQueueRuntime(workspaceId);
   const queue = runtime.state;
-  const newItems: QueueItem[] = videos.map((v: any) => ({
+  const submittedItems: QueueItem[] = videos.map((v: any) => ({
     media_url: v.media_url,
     title: v.title,
     format_id: v.selected_format_id || v.format_id || 'best',
   })).filter((item: QueueItem) => typeof item.media_url === 'string' && item.media_url.trim());
-  if (!newItems.length) return res.status(400).json({ success: false, error: 'No valid video URLs were supplied' });
+  if (!submittedItems.length) return res.status(400).json({ success: false, error: 'No valid video URLs were supplied' });
+  // Deduplicate across the complete queue run, including in-flight and completed items.
+  const newItems: QueueItem[] = [];
+  for (const item of submittedItems) {
+    const key = queueItemKey(item.media_url);
+    if (runtime.queuedUrlKeys.has(key)) continue;
+    runtime.queuedUrlKeys.add(key);
+    newItems.push(item);
+  }
+  const duplicatesSkipped = submittedItems.length - newItems.length;
+  if (!newItems.length) {
+    const backedUp = runtime.lastRemoteSaveAt >= runtime.latestQueueMutationAt && runtime.latestQueueMutationAt > 0;
+    return res.status(backedUp ? 200 : 503).json({ success: backedUp, message: `All ${duplicatesSkipped} submitted video(s) are already part of this queue; no duplicates were added.`, duplicates_skipped: duplicatesSkipped, queue: { total: queue.total_items, current: queue.current_index, pending: queue.pending_items.length, is_running: queue.is_running }, ...(backedUp ? {} : { error: 'The existing queue checkpoint is still not confirmed in Supabase.', backup_error: runtime.lastRemoteSaveError }) });
+  }
 
   const wasRunning = queue.is_running;
   if (!wasRunning || !queueRunIds.has(workspaceId)) {
@@ -1403,12 +1428,13 @@ app.post('/api/download-all-nonstop', async (req, res) => {
       queue: { total: queue.total_items, current: queue.current_index, pending: queue.pending_items.length, is_running: queue.is_running },
     });
   }
-  addLog('info', `Enqueued ${newItems.length} videos into this browser's private queue (Total items: ${queue.total_items})`);
+  addLog('info', `Enqueued ${newItems.length} new video(s) into this browser's private queue; skipped ${duplicatesSkipped} duplicate(s) (Total items: ${queue.total_items})`);
   if (!runtime.currentItem) void processNextNonstopItem(workspaceId);
 
   res.json({
     success: true,
-    message: `Started downloading ${newItems.length} video(s) in your private queue`,
+    message: `Added ${newItems.length} new video(s) to your private queue; skipped ${duplicatesSkipped} duplicate(s)`,
+    duplicates_skipped: duplicatesSkipped,
     queue: { total: queue.total_items, current: queue.current_index, pending: queue.pending_items.length, is_running: queue.is_running },
   });
 });
@@ -1447,6 +1473,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   const queueActionId = queueRunIds.get(workspaceId);
   queue.is_running = false;
   queue.pending_items = [];
+  runtime.queuedUrlKeys.clear();
   runtime.dispatchScheduled = false;
   runtime.currentItem = null;
   queue.current_title = '';

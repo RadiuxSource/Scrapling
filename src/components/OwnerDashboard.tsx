@@ -4,6 +4,7 @@ import { Activity, RefreshCw, ShieldCheck, SquareArrowOutUpRight, StopCircle, Lo
 type Summary = { server: any; workspaces: any[] };
 export const OwnerDashboard: React.FC = () => {
   const [secret, setSecret] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -25,6 +26,14 @@ export const OwnerDashboard: React.FC = () => {
   }, [selected?.browser_id]);
 
   useEffect(() => {
+    let active = true;
+    void fetch('/api/owner/session').then((response) => {
+      if (active && response.ok) setAuthenticated(true);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     if (!authenticated) return;
     void refresh().catch((e) => setError(e.message));
     const timer = window.setInterval(() => { void refresh().catch((e) => setError(e.message)); }, 30000);
@@ -34,7 +43,7 @@ export const OwnerDashboard: React.FC = () => {
   const login = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      const response = await fetch('/api/owner/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret }) });
+      const response = await fetch('/api/owner/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret, remember_me: rememberMe }) });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || 'Owner login failed.');
       setSecret(''); setAuthenticated(true);
@@ -89,6 +98,7 @@ export const OwnerDashboard: React.FC = () => {
         <form onSubmit={login}>
           <label htmlFor="owner-secret">Owner access secret</label>
           <input id="owner-secret" type="password" autoComplete="current-password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Enter OWNER_ACCESS_SECRET" required />
+          <label className="owner-remember"><input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} /> Remember me for 30 days on this device</label>
           <button disabled={busy}>{busy ? 'Authenticating…' : 'Unlock Control Center'}</button>
         </form>
         {error && <p className="owner-error">{error}</p>}
