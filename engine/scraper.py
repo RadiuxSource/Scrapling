@@ -3,6 +3,7 @@ import json
 import logging
 import urllib.parse
 import urllib.request
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -135,6 +136,15 @@ class MediaInspector:
         clean_url = url.strip()
         if not clean_url.startswith(("http://", "https://")):
             clean_url = "https://" + clean_url
+        parsed_root = urllib.parse.urlparse(clean_url)
+        root_host = (parsed_root.hostname or "").lower().removeprefix("www.")
+        is_youtube_url = (
+            root_host == "youtu.be"
+            or root_host == "youtube.com"
+            or root_host.endswith(".youtube.com")
+            or root_host == "youtube-nocookie.com"
+            or root_host.endswith(".youtube-nocookie.com")
+        )
 
         report = {
             "page_url": clean_url,
@@ -182,6 +192,26 @@ class MediaInspector:
             report["success"] = True
             report["status_code"] = 200
             report["page_title"] = name
+            return report
+
+        # YouTube is an extractor-backed platform, not a catalog page. Its
+        # HTML normally contains player metadata rather than a direct <video>
+        # source, so send it straight to yt-dlp and avoid generic browser recovery.
+        if is_youtube_url:
+            logger.info("Recognized YouTube URL; using the dedicated yt-dlp extractor.")
+            yt_videos = self._inspect_with_ytdlp(clean_url)
+            if yt_videos:
+                report["videos"].extend(yt_videos)
+                report["detected_players"].append("yt-dlp YouTube Extractor")
+                report["page_title"] = yt_videos[0].get("title") or "YouTube Video"
+                report["success"] = True
+            else:
+                report["error"] = (
+                    "yt-dlp could not extract this YouTube URL. Check the yt-dlp "
+                    "diagnostic above; the video may be unavailable or require "
+                    "an authorized session."
+                )
+            report["detected_players"] = sorted(set(report["detected_players"]))
             return report
 
         html_text = ""
@@ -1307,11 +1337,20 @@ class MediaInspector:
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
-            "extract_flat": "in_playlist",
-            "socket_timeout": 15,
-            "ignoreerrors": True,
+            "socket_timeout": 25,
+            "ignoreerrors": False,
+            "retries": 2,
+            "extractor_retries": 3,
             "logger": YtDlpQuietLogger(),
+            # Current YouTube player responses can require a supported JS
+            # runtime plus yt-dlp's EJS challenge solver. Deno is installed
+            # in the production image; keep the setting conditional for local
+            # development environments where it may not be present.
+            "remote_components": ["ejs:github"],
         }
+        deno_path = shutil.which("deno")
+        if deno_path:
+            ydl_options["js_runtimes"] = {"deno": {"path": deno_path}}
 
         results = []
         try:
