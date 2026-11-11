@@ -335,7 +335,7 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 - This feature needs deployment-level verification with multiple browsers and a real Koyeb restart before it can be called production-verified.
 
 
-### 11/11 — Queue restore timeout and notification visibility
+#### Queue restore timeout and notification visibility
 - Added a 12-second timeout to the Supabase queue restore request so a stalled network request cannot leave the recovery indicator spinning indefinitely.
 - Kept restore status available to the dashboard for up to 45 seconds after success or cancellation, instead of clearing it on the first status poll.
 - Kept cancellation distinct from timeout: a user-cancelled restore reports cancellation, while an expired request reports a timeout error and can fall back to the local queue checkpoint.
@@ -352,7 +352,7 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 
 
-### 10/11 — Supabase queue restore URL and API-path errors
+#### Supabase queue restore URL and API-path errors
 - Fixed Supabase URL normalization used by durable nonstop-queue restore and backup.
 - The server now accepts the standard Supabase Project URL (`https://<project-ref>.supabase.co`), a Project URL with a trailing `/rest/v1`, and the Supabase project dashboard URL (`https://supabase.com/dashboard/project/<project-ref>`), converting the dashboard form to the matching project API hostname.
 - Added clearer validation guidance when an unrelated dashboard path or malformed URL is supplied.
