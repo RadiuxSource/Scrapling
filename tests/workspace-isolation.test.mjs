@@ -168,3 +168,17 @@ test('workspace APIs do not reveal jobs or crawl tasks from another workspace', 
   const foreignCrawl = await request('/api/scrape/status/crawl_ci_foreign', secondCookie);
   assert.equal(foreignCrawl.status, 404);
 });
+
+
+test('queue restore diagnostics identify the signed browser workspace', async () => {
+  const initial = await fetch(`${baseUrl}/api/nonstop-queue/restore-status`);
+  const cookie = cookieFrom(initial);
+  const workspaceId = cookie.slice('vortex_workspace='.length).split('.')[0];
+  const response = await request('/api/nonstop-queue/restore-status', cookie);
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.success, true);
+  assert.equal(data.restore.workspace_id, workspaceId);
+  assert.equal(data.restore.browser_id, `BRW-${workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase()}`);
+  assert.equal(typeof data.restore.message, 'string');
+});
