@@ -1757,6 +1757,7 @@ initializeOwnerMonitoring(app, {
     const entries = Array.from(activeProcesses.values()).filter((entry) => entry.workspaceId === workspaceId);
     entries.forEach((entry) => terminateProcessEntry(entry));
     const runtime = queueRuntimes.get(workspaceId);
+    const pendingQueueItems = runtime?.state.pending_items.length || 0;
     if (runtime) {
       runtime.state.is_running = false; runtime.state.pending_items = []; runtime.currentItem = null; runtime.state.current_title = '';
       runtime.restoreController?.abort(); void persistNonstopQueueState(workspaceId);
@@ -1764,7 +1765,7 @@ initializeOwnerMonitoring(app, {
         if (!['completed', 'failed'].includes(job.status)) { job.status = 'failed'; job.error = 'Stopped by owner from Control Center'; job.finished_at = Date.now(); persistWorkspaceJob(job, workspaceId); }
       }
     }
-    void recordOperationalEvent(ROOT_DIR, { category: 'owner-control', summary: 'Owner stopped browser workspace tasks', workspaceId, details: { active_processes_stopped: entries.length, pending_queue_items_discarded: queuePendingBeforeStop } });
+    void recordOperationalEvent(ROOT_DIR, { category: 'owner-control', summary: 'Owner stopped browser workspace tasks', workspaceId, details: { active_processes_stopped: entries.length, pending_queue_items_discarded: pendingQueueItems } });
     return { stopped: entries.length, details: entries.map((entry) => entry.action + ':' + entry.id) };
   },
 });
