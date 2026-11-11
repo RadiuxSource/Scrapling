@@ -183,7 +183,7 @@
 .rounded-xl { border-radius: var(--vortex-radius-panel) !important; }
 .rounded-lg { border-radius: var(--vortex-radius-control) !important; }
 .shadow-sm, .shadow-md, .shadow-lg { box-shadow: none !important; }
-[class*="bg-gradient-to-r"] { background-image: none !important; }
+[class*="bg-gradient-to-r"] { background-image: none !important; }\ndiv[class*="bg-gradient-to-r"] { background-color: var(--vortex-surface) !important; }\nbutton.bg-cyan-500, button.bg-cyan-600 { color: var(--vortex-accent-ink) !important; }
 button[class*="bg-gradient-to-r"] { color: var(--vortex-accent-ink) !important; background-color: var(--vortex-accent) !important; box-shadow: none !important; }
 button[class*="from-cyan-500"], button[class*="from-emerald-500"] { border: 1px solid #d4fa8b !important; }
 button[class*="from-cyan-500"]:hover, button[class*="from-emerald-500"]:hover { background-color: #d4fa8b !important; }

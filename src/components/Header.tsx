@@ -1,11 +1,9 @@
 import React from 'react';
 import {
   Activity,
-  Download,
   FolderDown,
   Layers,
   ListChecks,
-  Radio,
   Send,
   TerminalSquare,
 } from 'lucide-react';
@@ -69,11 +67,9 @@ export const Header: React.FC<HeaderProps> = ({
 
       <div className="vortex-header-actions">
         <div className="vortex-workspace-label">
-          <Radio size={13} strokeWidth={1.8} aria-hidden="true" />
-          <span>WORKSPACE</span>
+          <span>BROWSER WORKSPACE</span>
         </div>
         <button type="button" onClick={onPrimaryAction} className="vortex-primary-action">
-          <Download size={15} strokeWidth={2} aria-hidden="true" />
           <span>{primaryActionLabel}</span>
         </button>
       </div>
