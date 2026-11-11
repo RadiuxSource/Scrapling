@@ -964,7 +964,7 @@ app.post('/api/scrape', (req, res) => {
 app.get('/api/scrape/tasks', (_req, res) => {
   const tasks = Array.from(getWorkspaceCrawlTasks().values())
     .sort((a, b) => b.started_at - a.started_at)
-    .slice(0, 10);
+    .slice(0, 1);
   res.json({ success: true, tasks });
 });
 
