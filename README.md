@@ -219,6 +219,7 @@ Supabase is optional for local development. It is recommended when deploying on 
 | `SUPABASE_URL` | Your Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Your project's service-role key |
 | `WORKSPACE_SECRET` | A stable random secret (at least 32 random characters) used to sign anonymous browser workspace cookies |
+| `WORKSPACE_MIGRATION_TOKEN` | Optional one-time secret used only to authorize copying the old shared queue into the current browser workspace; remove it after migration |
 
 5. Redeploy the application. Each browser workspace restores its own queue the first time the dashboard requests queue status.
 
@@ -343,6 +344,21 @@ The API is intended to be used by the Vortex frontend. Data-bearing API routes u
 - **Shared infrastructure boundary:** server-wide operational resources and deployment-level Supabase queue credentials remain shared infrastructure; anonymous browser workspaces are not separate trusted accounts.
 - **Legacy file handling:** files and reports already present in the old shared `downloads/` and `reports/` folders are left untouched and are not shown in a new workspace's file library. They are not automatically assigned to the first browser that visits, which could disclose another user's files.
 - **Legacy queue migration:** the old shared Supabase row with ID `main` and local `logs/nonstop-queue.json` are deliberately left untouched. They are not automatically assigned to whichever browser visits first, because that could expose the old owner's queue to another user. New queues use workspace-specific rows and checkpoints.
+- **Phase 9 implemented (11/11):** added an opt-in, token-protected legacy queue claim endpoint. It copies the old Supabase `main` row (preferred) or legacy local checkpoint into the current signed browser workspace only when that destination has no queue. The endpoint verifies the Supabase copy before writing the local workspace checkpoint, recovers the in-flight item as pending, and starts normal queue processing. The legacy source is never deleted or overwritten, so a failed/partial migration does not destroy the original queue.
+
+**One-time legacy queue migration (only for the browser that owns the old queue):**
+1. Set a strong random `WORKSPACE_MIGRATION_TOKEN` in the deployment environment and redeploy. Keep `WORKSPACE_SECRET` unchanged so your browser workspace cookie remains stable.
+2. Open the app in the original owner's browser (the browser that should inherit the old queue). Open Developer Tools → Console and run the following, replacing the placeholder with the token you configured:
+
+   ```js
+   fetch('/api/nonstop-queue/legacy-migration/claim', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ token: 'REPLACE_WITH_YOUR_MIGRATION_TOKEN' })
+   }).then(r => r.json()).then(console.log);
+   ```
+3. Confirm the response says `success: true` and check the queue status in the app. Do not run this from another browser or share the token.
+4. Remove `WORKSPACE_MIGRATION_TOKEN` from the deployment environment and redeploy after the one-time claim. The legacy `main` row and local checkpoint remain as backups and are not automatically deleted.
 - Extraction behavior was not changed.
 - Phase 5 scopes crawl task status/active-crawl guards and app/Telegram settings by workspace; existing shared settings and Telegram environment values are intentionally not auto-migrated.
 - **Phase 6:** crawl task history/results are now persisted in each workspace's `logs/crawl-tasks.json` using atomic file replacement. After a restart, completed/failed task results remain available to that same browser; a task that was still running is marked failed with a clear restart message rather than remaining stuck forever. The crawl itself is not resumed after restart; the independent nonstop download queue recovery remains unchanged.
