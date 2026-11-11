@@ -48,9 +48,9 @@ def export_cookies(context):
     for c in context.cookies():
         domain, name = c.get("domain", ""), c.get("name", "")
         if not domain or not name: continue
-        lines.append("\\t".join([domain, "TRUE" if domain.startswith(".") else "FALSE", c.get("path") or "/", "TRUE" if c.get("secure") else "FALSE", str(int(c.get("expires") or 0)), name, c.get("value", "")]))
+        lines.append("\t".join([domain, "TRUE" if domain.startswith(".") else "FALSE", c.get("path") or "/", "TRUE" if c.get("secure") else "FALSE", str(int(c.get("expires") or 0)), name, c.get("value", "")]))
     tmp = COOKIE.with_suffix(".tmp")
-    tmp.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
     tmp.replace(COOKIE)
 
