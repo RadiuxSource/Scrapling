@@ -444,3 +444,11 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Added saved crawl-request replay through `POST /api/scrape/resume/:id`. This re-runs the saved request; it does not restore an interrupted Python process's exact in-memory position.
 - Added a public default-bot identity endpoint that returns the bot username only, never the token.
 - Added owner monitoring environment variable documentation. Raw bot tokens and API hashes are masked in owner exports.
+
+- Added the private `/owner` Control Center with secret-based login, cross-browser workspace inspection, friendly workspace names, task stopping, and saved crawl-request replay.
+- Server startup now scans persisted browser workspaces and restores saved queue state automatically; the log group receives per-browser restore outcomes and a startup recovery summary.
+- Queue lifecycle messages distinguish normal completion, completion with failures, user termination, owner termination, and server-restart interruption.
+- The Telegram fallback matrix is enforced in the Python engine: complete custom bot/channel pair uses both; channel-only uses the deployment default bot with that channel; bot-only or neither uses the deployment default bot and log group.
+- A custom channel setup triggers Bot API verification and invite-link creation. The bot/channel names, IDs, invite link, and masked credential status are included in `/botinfos`.
+- If the log destination is a forum-enabled supergroup, the monitoring bot attempts to create a dedicated **Vortex Operational Logs** topic. It falls back to the main group if topic creation or delivery is unavailable.
+- See [Telegram setup and Koyeb environment instructions](docs/TELEGRAM_SETUP.md). The Bot API cannot create a new group; the group owner must create it and add the bot.
