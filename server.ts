@@ -996,11 +996,6 @@ app.get('/api/nonstop-queue/restore-status', async (_req, res) => {
   const workspaceId = getWorkspaceId();
   await ensureQueueRestored(workspaceId);
   const runtime = getQueueRuntime(workspaceId);
-  if (runtime.restoreNoticeUntil && Date.now() > runtime.restoreNoticeUntil) {
-    runtime.restoreStatus = 'idle';
-    runtime.restoreMessage = '';
-    runtime.restoreNoticeUntil = 0;
-  }
   res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
 });
 
@@ -1462,9 +1457,9 @@ async function shutdownGracefully(signal: string) {
   isShuttingDown = true;
   addLog('warn', `Received ${signal}; beginning graceful shutdown.`);
 
-  // Stop dispatching the next queue item, but let the active runner finish
-  // while Koyeb's termination grace period is still available.
-  nonstopQueue.is_running = false;
+  // Stop dispatching new items for every workspace while allowing active runners
+  // to drain during the platform's termination grace period.
+  for (const runtime of queueRuntimes.values()) runtime.state.is_running = false;
   if (httpServer) {
     httpServer.close();
     try { httpServer.closeIdleConnections?.(); } catch {}
@@ -1475,13 +1470,14 @@ async function shutdownGracefully(signal: string) {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  // Requeue the in-flight item even if its child exited during shutdown. The
-  // platform may replace the filesystem, so the durable snapshot must exist first.
-  if (currentNonstopItem) {
-    nonstopQueue.pending_items.unshift(currentNonstopItem);
-    currentNonstopItem = null;
+  // Requeue every in-flight workspace item and persist each isolated snapshot.
+  for (const [workspaceId, runtime] of queueRuntimes.entries()) {
+    if (runtime.currentItem) {
+      runtime.state.pending_items.unshift(runtime.currentItem);
+      runtime.currentItem = null;
+    }
+    await persistNonstopQueueState(workspaceId, true);
   }
-  await persistNonstopQueueState(true);
 
   if (activeProcesses.size > 0) {
     for (const entry of activeProcesses.values()) {
@@ -1499,17 +1495,9 @@ process.on('SIGTERM', () => { void shutdownGracefully('SIGTERM'); });
 process.on('SIGINT', () => { void shutdownGracefully('SIGINT'); });
 
 async function bootstrapServer() {
+  // Queues are restored lazily when their owning browser workspace connects.
+  // This avoids loading a legacy/global queue into an arbitrary visitor's session.
   await startServer();
-  void (async () => {
-    await restoreNonstopQueueState();
-    if (queueRestoreStatus === 'success' && nonstopQueue.pending_items.length > 0 && !isShuttingDown) {
-      nonstopQueue.is_running = true;
-      await persistNonstopQueueState();
-      void processNextNonstopItem();
-    }
-  })().catch((err) => {
-    queueRestoreStatus = 'error'; queueRestoreMessage = `Queue recovery failed: ${err.message}`; addLog('error', queueRestoreMessage);
-  });
 }
 
 bootstrapServer().catch((err) => {
