@@ -1394,7 +1394,9 @@ class MediaInspector:
                     "youtube": (
                         {"player_client": [player_client]} if player_client else {}
                     ),
-                    "youtubepot-bgutilscript": {"server_home": [pot_home]},
+                    "youtubepot-bgutilhttp": {
+                        "base_url": ["http://127.0.0.1:4416"]
+                    },
                 }
             if player_client:
                 logger.info(
