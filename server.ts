@@ -6,7 +6,7 @@ import { spawn } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dotenv from 'dotenv';
-import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite, browserIdForWorkspace, appendOperationalDetail } from './owner-monitoring.js';
+import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite, appendOperationalDetail } from './owner-monitoring.js';
 
 dotenv.config();
 
@@ -737,7 +737,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         addLog('info', `Nonstop queue finished: ${queue.completed_count} completed, ${queue.failed_count} failed.`);
         const completedRunId = queueRunIds.get(workspaceId);
         if (completedRunId) {
-          void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser nonstop queue completed', workspaceId, actionId: completedRunId, phase: 'end', details: { completed_count: queue.completed_count, failed_count: queue.failed_count, pending_count: 0, outcome: 'completed' } });
+          void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser nonstop queue completed', workspaceId, actionId: completedRunId, phase: 'end', details: { completed_count: queue.completed_count, failed_count: queue.failed_count, pending_count: 0, outcome: queue.failed_count > 0 ? 'completed_with_failures' : 'completed' } });
           queueRunIds.delete(workspaceId);
         }
         return;
@@ -883,7 +883,7 @@ app.post('/api/settings', (req, res) => {
     }
     fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2));
     addLog('info', 'Updated configuration settings');
-    if (merged.telegram_bot_token && merged.telegram_chat_id) void ensureWorkspaceTelegramInvite(ROOT_DIR, getWorkspaceId());
+    if (merged.telegram_chat_id) void ensureWorkspaceTelegramInvite(ROOT_DIR, getWorkspaceId());
    const safeSettings = {
   ...merged,
   telegram_bot_token: '',
@@ -1336,6 +1336,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   const runtime = getQueueRuntime(workspaceId);
   const queue = runtime.state;
   const pendingItemsDiscarded = queue.pending_items.length;
+  const queuePendingBeforeStop = queue.pending_items.length;
   const inFlightTitle = runtime.currentItem?.title || queue.current_title || null;
   const queueActionId = queueRunIds.get(workspaceId);
   queue.is_running = false;
@@ -1735,7 +1736,7 @@ initializeOwnerMonitoring(app, {
         if (!['completed', 'failed'].includes(job.status)) { job.status = 'failed'; job.error = 'Stopped by owner from Control Center'; job.finished_at = Date.now(); persistWorkspaceJob(job, workspaceId); }
       }
     }
-    void recordOperationalEvent(ROOT_DIR, { category: 'owner-control', summary: 'Owner stopped browser workspace tasks', workspaceId, details: { active_processes_stopped: entries.length, pending_queue_items_discarded: runtime?.state.pending_items.length || 0 } });
+    void recordOperationalEvent(ROOT_DIR, { category: 'owner-control', summary: 'Owner stopped browser workspace tasks', workspaceId, details: { active_processes_stopped: entries.length, pending_queue_items_discarded: queuePendingBeforeStop } });
     return { stopped: entries.length, details: entries.map((entry) => entry.action + ':' + entry.id) };
   },
 });

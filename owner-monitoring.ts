@@ -100,7 +100,9 @@ export async function recordOperationalEvent(root: string, event: {
     '<b>Time:</b> ' + new Date().toISOString() +
     (detailLines.length ? '\n' + detailLines.map(x => html(x)).join('\n') : '');
   appendOperationalDetail(root, actionId, event.category + ' | ' + event.summary + ' | browser=' + browser + ' | ' + detailLines.join(' | '));
-  const messageId = await sendActionMessage(root, text + (event.workspaceId ? '\\n\\n<b>More info:</b> /userinfo ' + html(browser) + ' · reply with /logs for this action' : ''), actionId, event.phase || 'end');
+  const phase = event.phase || 'end';
+  const messageId = await sendActionMessage(root, text + (event.workspaceId ? '\n\n<b>More info:</b> /userinfo ' + html(browser) + ' · reply with /logs for this action' : ''), actionId, phase);
+  if (messageId) appendOperationalDetail(root, actionId, 'Telegram ' + phase + '_message_id=' + messageId);
   return { actionId, messageId };
 }
 function loadWorkspaceSummary(root: string, id: string) {
@@ -126,6 +128,9 @@ function loadWorkspaceSummary(root: string, id: string) {
       telegram_bot_configured: Boolean(settings.telegram_bot_token),
       telegram_bot_token_masked: mask(settings.telegram_bot_token || ''),
       telegram_chat_id: settings.telegram_chat_id || null,
+      telegram_channel_title: metadata.telegram_channel_title || null,
+      telegram_channel_username: metadata.telegram_channel_username || null,
+      telegram_channel_type: metadata.telegram_channel_type || null,
       telegram_api_id_configured: Boolean(settings.telegram_api_id),
       telegram_api_hash_configured: Boolean(settings.telegram_api_hash),
       telegram_thread_id: settings.telegram_thread_id || null,
@@ -210,6 +215,15 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   }
 }
 export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
+  app.post('/api/workspace/name', (req: Request, res: Response) => {
+    const id = String((req as any).workspaceId || '');
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 50) : '';
+    if (!id || !name) return res.status(400).json({ success: false, error: 'A non-empty browser name (max 50 characters) is required.' });
+    const file = metaFile(options.rootDir, id); const metadata = safeJson(file, {});
+    atomicJson(file, { ...metadata, name, name_updated_at: Date.now() });
+    void recordOperationalEvent(options.rootDir, { category: 'workspace', summary: 'Browser workspace name updated', workspaceId: id, details: { name } });
+    res.json({ success: true, browser_id: browserLabel(id), name });
+  });
   app.get('/api/workspace/info', (req: Request, res: Response) => {
     const id = String((req as any).workspaceId || '');
     const metadata = id ? safeJson(metaFile(options.rootDir, id), {}) : {};
@@ -301,6 +315,9 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
     const meResponse = await fetch('https://api.telegram.org/bot' + token + '/getMe', { signal: AbortSignal.timeout(10000) });
     const me: any = await meResponse.json();
     if (!me.ok) throw new Error(me.description || 'Bot token rejected');
+    const chatResponse = await fetch('https://api.telegram.org/bot' + token + '/getChat?chat_id=' + encodeURIComponent(channel), { signal: AbortSignal.timeout(10000) });
+    const chatData: any = await chatResponse.json();
+    if (!chatData.ok) throw new Error(chatData.description || 'Bot cannot access the configured channel/chat.');
     const inviteResponse = await fetch('https://api.telegram.org/bot' + token + '/createChatInviteLink', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: channel, name: 'Vortex ' + browserLabel(workspaceId), creates_join_request: false }),
@@ -308,7 +325,7 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
     });
     const invite: any = await inviteResponse.json();
     if (!invite.ok) throw new Error(invite.description || 'Bot cannot create channel invite link; grant invite-user permission.');
-    const next = { ...metadata, telegram_bot_username: me.result?.username || null, telegram_invite_link: invite.result?.invite_link || null, telegram_invite_link_status: 'created', telegram_invite_channel_id: channel, telegram_bot_source: customToken && customChannel ? 'custom' : 'deployment_default' };
+    const next = { ...metadata, telegram_bot_username: me.result?.username || null, telegram_channel_title: chatData.result?.title || chatData.result?.first_name || null, telegram_channel_username: chatData.result?.username || null, telegram_channel_type: chatData.result?.type || null, telegram_invite_link: invite.result?.invite_link || null, telegram_invite_link_status: 'created', telegram_invite_channel_id: channel, telegram_bot_source: customToken && customChannel ? 'custom' : 'deployment_default' };
     atomicJson(file, next);
     await recordOperationalEvent(root, { category: 'telegram-setup', summary: 'Resolved bot/channel verified and invite link created', workspaceId, details: { bot_username: next.telegram_bot_username, channel_id: channel, bot_source: next.telegram_bot_source, invite_link: next.telegram_invite_link } });
     return { status: 'created', bot_username: next.telegram_bot_username, invite_link: next.telegram_invite_link };
