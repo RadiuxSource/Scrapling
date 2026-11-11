@@ -195,35 +195,33 @@ class VideoDownloader:
                 "total_bytes": file_size
             })
 
-            # Check Telegram auto-upload
+            # Every completed download is archived to the deployment's
+            # internal Telegram channel. A workspace channel, when present,
+            # receives a forward of that same Telegram message (not a second upload).
             settings = load_settings()
-            if settings.get("auto_upload_telegram"):
-                # Let TelegramNotifier resolve the workspace pair and platform
-                # video-bot fallback. Checking the raw workspace token here
-                # would skip channel-only setups before fallback can run.
-                tg = TelegramNotifier(
-                    settings.get("telegram_bot_token"),
-                    settings.get("telegram_chat_id")
+            tg = TelegramNotifier(
+                settings.get("telegram_bot_token"),
+                settings.get("telegram_chat_id")
+            )
+            if tg.is_configured():
+                report_progress({"status": "uploading_telegram"})
+                tg_res = tg.send_download_complete(
+                    title=report_data["title"],
+                    site_url=media_url,
+                    file_path=str(final_filepath),
+                    file_size_bytes=file_size,
+                    duration=report_data.get("duration_seconds")
                 )
-                if tg.is_configured():
-                    report_progress({"status": "uploading_telegram"})
-                    tg_res = tg.send_download_complete(
-                        title=report_data["title"],
-                        site_url=media_url,
-                        file_path=str(final_filepath),
-                        file_size_bytes=file_size,
-                        duration=report_data.get("duration_seconds")
-                    )
-                else:
-                    tg_res = {
-                        "success": False,
-                        "skipped": True,
-                        "error": "Telegram auto-upload is enabled, but no video-delivery bot and channel are configured."
-                    }
-                report_data["telegram_uploaded"] = bool(tg_res.get("success"))
-                report_data["telegram_result"] = tg_res
-                if not report_data["telegram_uploaded"]:
-                    logger.error("Telegram upload failed for %s: %s", final_filepath.name, tg_res.get("error") or "No error details returned")
+            else:
+                tg_res = {
+                    "success": False,
+                    "skipped": True,
+                    "error": "Internal Telegram backup is not configured. Set TELEGRAM_BOT_TOKEN (or LOG_TELEGRAM_BOT_TOKEN) and TELEGRAM_BACKUP_CHAT_ID (or LOG_TELEGRAM_CHAT_ID)."
+                }
+            report_data["telegram_uploaded"] = bool(tg_res.get("success"))
+            report_data["telegram_result"] = tg_res
+            if not report_data["telegram_uploaded"]:
+                logger.error("Telegram backup/forward failed for %s: %s", final_filepath.name, tg_res.get("error") or "No error details returned")
 
         # Save JSON Report
         report_file = REPORTS_DIR / f"{job_id}.json"

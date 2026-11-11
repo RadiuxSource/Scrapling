@@ -65,13 +65,19 @@ def resolve_telegram_delivery(settings=None, bot_token=None, chat_id=None):
     settings = settings or load_settings()
     custom_bot = str(bot_token or settings.get("telegram_bot_token") or "").strip()
     custom_chat = str(chat_id or settings.get("telegram_chat_id") or "").strip()
-    # Media delivery uses the main platform bot, never the dedicated logs bot.
-    default_bot = str(os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    # Operational log destinations must never become media-upload targets.
-    default_chat = str(os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    # The platform media bot backs up every completed video to the internal
+    # operational channel. The owner explicitly designated that channel as the
+    # media archive; it is no longer merely a diagnostics destination.
+    default_bot = str(os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("LOG_TELEGRAM_BOT_TOKEN") or "").strip()
+    default_chat = str(
+        os.getenv("TELEGRAM_BACKUP_CHAT_ID")
+        or os.getenv("LOG_TELEGRAM_CHAT_ID")
+        or os.getenv("TELEGRAM_CHAT_ID")
+        or ""
+    ).strip()
 
     if custom_bot and custom_chat:
-        return {"bot_token": custom_bot, "chat_id": custom_chat, "source": "custom", "api_id": settings.get("telegram_api_id", ""), "api_hash": settings.get("telegram_api_hash", "")}
+        return {"bot_token": custom_bot, "chat_id": custom_chat, "source": "custom", "api_id": settings.get("telegram_api_id", ""), "api_hash": settings.get("telegram_api_hash", ""), "backup_chat_id": default_chat, "forward_chat_id": custom_chat if default_chat and custom_chat != default_chat else ""}
     if custom_chat:
-        return {"bot_token": default_bot, "chat_id": custom_chat, "source": "default_bot_custom_channel", "api_id": "", "api_hash": ""}
-    return {"bot_token": default_bot, "chat_id": default_chat, "source": "deployment_default", "api_id": "", "api_hash": ""}
+        return {"bot_token": default_bot, "chat_id": custom_chat, "source": "default_bot_custom_channel", "api_id": "", "api_hash": "", "backup_chat_id": default_chat, "forward_chat_id": custom_chat if default_chat and custom_chat != default_chat else ""}
+    return {"bot_token": default_bot, "chat_id": default_chat, "source": "deployment_default", "api_id": "", "api_hash": "", "backup_chat_id": default_chat, "forward_chat_id": ""}

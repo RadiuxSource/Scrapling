@@ -268,6 +268,9 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   const rawText = String(message.text || '').trim();
   const command = (rawText.split(/\s+/, 1)[0] || '').split('@')[0].toLowerCase();
   const args = rawText.split(/\s+/).slice(1);
+  if (command === '/userinfo' || command === '/workspaces' || command === '/botinfos') {
+    await ensureWorkspaceMetadataRestored(root);
+  }
   const chatId = message.chat?.id;
   const isLogGroup = Boolean(LOG_CHAT_ID && String(chatId) === LOG_CHAT_ID);
   const threadId = Number(message.message_thread_id || (isLogGroup ? logThreadId : 0) || 0) || undefined;
@@ -296,7 +299,7 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   if (command === '/userinfo') {
     const requested = args[0] || '';
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === requested.toLowerCase() || x.toLowerCase() === requested.toLowerCase());
-    if (!id) { await telegram('sendMessage', { chat_id: chatId, text: 'Browser ID not found. Use /workspaces to list known browsers.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
+    if (!id) { await telegram('sendMessage', { chat_id: chatId, text: 'Browser ID not found after restoring saved workspace metadata. Run /workspaces and copy the exact Browser ID; if it is still missing, check whether WORKSPACE_SECRET changed or Supabase workspace metadata is unavailable.', ...(threadId ? { message_thread_id: threadId } : {}) }); return; }
     const data = loadWorkspaceSummary(root, id);
     const report = JSON.stringify(data, null, 2);
     const file = path.join(root, 'data', 'owner-monitoring', 'exports', data.browser_id + '-userinfo.txt');

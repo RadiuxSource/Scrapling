@@ -30,7 +30,10 @@ class TelegramNotifier:
         settings = load_settings()
         delivery = resolve_telegram_delivery(settings, bot_token=bot_token, chat_id=chat_id)
         self.bot_token = delivery["bot_token"]
-        self.chat_id = delivery["chat_id"]
+        # Always post the media once to the internal archive first. If a user
+        # supplied a destination, forward Telegram's stored message afterwards.
+        self.chat_id = delivery.get("backup_chat_id") or delivery["chat_id"]
+        self.forward_chat_id = delivery.get("forward_chat_id") or ""
         self.delivery_source = delivery["source"]
         if delivery["source"] == "custom":
             self.api_id = (api_id or delivery.get("api_id") or "").strip()
@@ -198,13 +201,48 @@ class TelegramNotifier:
         if not p.exists():
             return {"success": False, "error": f"File does not exist: {file_path}"}
 
-        # 1. Standard upload for files <= 49.5 MB
+        # Upload to the internal archive exactly once, then forward that
+        # stored Telegram message to the user's optional destination.
         if size_mb <= 49.5:
-            return self.upload_video(file_path, caption)
+            result = self.upload_video(file_path, caption)
+        else:
+            logger.info(f"File size ({size_mb} MB) exceeds standard Bot API 50MB limit. Engaging Large File Pipeline...")
+            result = self.upload_large_video(file_path, caption, title, size_mb)
 
-        # 2. Large File Mode (> 49.5 MB)
-        logger.info(f"File size ({size_mb} MB) exceeds standard Bot API 50MB limit. Engaging Large File Pipeline...")
-        return self.upload_large_video(file_path, caption, title, size_mb)
+        if result.get("success") and self.forward_chat_id:
+            forwarded = self._forward_backup_messages(result)
+            result["forwarded_to_user_channel"] = forwarded.get("success", False)
+            if not forwarded.get("success"):
+                result["forward_error"] = forwarded.get("error")
+            else:
+                result["forwarded_message_ids"] = forwarded.get("message_ids", [])
+        return result
+
+    def _forward_backup_messages(self, upload_result: Dict[str, Any]) -> Dict[str, Any]:
+        message_ids = upload_result.get("message_ids") or (
+            [upload_result["message_id"]] if upload_result.get("message_id") else []
+        )
+        if not message_ids:
+            return {"success": False, "error": "Backup upload did not return Telegram message IDs."}
+        forwarded_ids = []
+        for message_id in message_ids:
+            try:
+                response = self.session.post(
+                    f"{self.api_base}/forwardMessage",
+                    json={
+                        "chat_id": self.forward_chat_id,
+                        "from_chat_id": self.chat_id,
+                        "message_id": message_id,
+                    },
+                    timeout=20,
+                )
+                data = response.json()
+                if not data.get("ok"):
+                    raise RuntimeError(data.get("description", "Telegram forward failed"))
+                forwarded_ids.append(data["result"]["message_id"])
+            except Exception as exc:
+                return {"success": False, "error": str(exc), "message_ids": forwarded_ids}
+        return {"success": True, "message_ids": forwarded_ids}
 
     def upload_large_video(self, file_path: str, base_caption: str, title: str, size_mb: float) -> Dict[str, Any]:
         """
@@ -430,6 +468,7 @@ class TelegramNotifier:
                 pass
 
             uploaded_count = 0
+            uploaded_message_ids = []
             for idx, part_file in enumerate(parts, 1):
                 part_size_mb = round(part_file.stat().st_size / (1024 * 1024), 2)
                 part_caption = (
@@ -441,6 +480,8 @@ class TelegramNotifier:
                 upload_res = self.upload_video(str(part_file), part_caption)
                 if upload_res.get("success"):
                     uploaded_count += 1
+                    if upload_res.get("message_id"):
+                        uploaded_message_ids.append(upload_res["message_id"])
                 else:
                     logger.error(f"Failed to upload part {idx}: {upload_res.get('error')}")
 
@@ -449,6 +490,7 @@ class TelegramNotifier:
                 "method": "split_multi_part",
                 "total_parts": len(parts),
                 "uploaded_parts": uploaded_count,
+                "message_ids": uploaded_message_ids,
                 "message": f"Successfully uploaded {uploaded_count}/{len(parts)} video parts to Telegram."
             }
 
