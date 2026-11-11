@@ -281,7 +281,7 @@ The Express server exposes the application API, including:
 | `GET /api/downloads` | List downloaded files |
 | `GET /api/reports` | List download reports |
 
-The API is intended to be used by the Vortex frontend. Authentication and public multi-user access controls should be added before exposing it as a shared public service.
+The API is intended to be used by the Vortex frontend. Workspace isolation is being rolled out incrementally; do not expose the app as a shared public service until every data-bearing API and file operation has been isolated.
 
 ## Troubleshooting
 
@@ -327,6 +327,7 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 ### 11/11 — Privacy isolation (incremental rollout)
 - **Phase 1 implemented:** added a signed, anonymous browser workspace cookie and separated the in-memory Logs feed by workspace. No login or registration is required.
+- **Phase 2 implemented:** individual download-job records are now held in workspace-specific in-memory maps. The Jobs API, cancel, delete, and clear-finished actions operate only on the requesting browser's jobs; process cancellation also checks the owning workspace.
 - The cookie is HTTP-only, SameSite=Lax, and marked Secure when served over HTTPS. The browser reuses its workspace identity automatically.
 - Configure a stable, random `WORKSPACE_SECRET` (at least 32 random characters) in the deployment environment so browser workspace cookies remain valid across server restarts. If it is omitted, the server generates a temporary secret and warns that cookies will be invalidated on restart.
 - Logs generated inside a browser's request/background work context are visible only to that browser workspace. Server-startup and restart-recovery messages outside a browser request are kept in an internal system context and are not exposed through `/api/logs`.
