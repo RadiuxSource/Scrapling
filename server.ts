@@ -3,6 +3,8 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -54,7 +56,61 @@ interface JobStatus {
 }
 
 const activeJobs = new Map<string, JobStatus>();
-const engineLogs: Array<{ timestamp: string; level: 'info' | 'warn' | 'error'; message: string }> = [];
+
+// Logs are partitioned by a signed, anonymous browser workspace cookie.
+// AsyncLocalStorage carries the requesting workspace into background promises
+// and Python-runner callbacks without changing the extraction/queue code.
+type EngineLog = { timestamp: string; level: 'info' | 'warn' | 'error'; message: string };
+const workspaceLogs = new Map<string, EngineLog[]>();
+const workspaceContext = new AsyncLocalStorage<string>();
+const WORKSPACE_COOKIE_NAME = 'vortex_workspace';
+const WORKSPACE_SECRET = process.env.WORKSPACE_SECRET || randomBytes(32).toString('hex');
+if (!process.env.WORKSPACE_SECRET) {
+  console.warn('[Workspace] WORKSPACE_SECRET is not configured; browser workspace cookies will not survive a server restart. Set a stable random secret in the deployment environment.');
+}
+
+function signWorkspaceId(workspaceId: string): string {
+  return createHmac('sha256', WORKSPACE_SECRET).update(workspaceId).digest('hex');
+}
+
+function isValidWorkspaceCookie(value: string): string | null {
+  const separator = value.lastIndexOf('.');
+  if (separator < 0) return null;
+  const workspaceId = value.slice(0, separator);
+  const suppliedSignature = value.slice(separator + 1);
+  if (!/^[0-9a-f-]{36}$/i.test(workspaceId) || !/^[0-9a-f]{64}$/i.test(suppliedSignature)) return null;
+  const expected = Buffer.from(signWorkspaceId(workspaceId), 'hex');
+  const supplied = Buffer.from(suppliedSignature, 'hex');
+  return expected.length === supplied.length && timingSafeEqual(expected, supplied) ? workspaceId : null;
+}
+
+app.use((req, res, next) => {
+  const cookieHeader = req.headers.cookie || '';
+  const cookieValue = cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${WORKSPACE_COOKIE_NAME}=`))
+    ?.slice(WORKSPACE_COOKIE_NAME.length + 1);
+  let workspaceId: string | null = null;
+  if (cookieValue) {
+    try {
+      workspaceId = isValidWorkspaceCookie(decodeURIComponent(cookieValue));
+    } catch {
+      workspaceId = null;
+    }
+  }
+
+  if (!workspaceId) {
+    workspaceId = randomUUID();
+    const signature = signWorkspaceId(workspaceId);
+    const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0].trim();
+    const secure = req.secure || forwardedProto === 'https' ? '; Secure' : '';
+    res.append('Set-Cookie', `${WORKSPACE_COOKIE_NAME}=${workspaceId}.${signature}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax${secure}`);
+  }
+
+  (req as any).workspaceId = workspaceId;
+  workspaceContext.run(workspaceId, next);
+});
 
 interface CrawlTask {
   task_id: string;
@@ -69,15 +125,16 @@ let activeCrawlTaskId: string | null = null;
 
 
 function addLog(level: 'info' | 'warn' | 'error', message: string) {
-  const entry = {
+  const entry: EngineLog = {
     timestamp: new Date().toISOString(),
     level,
     message,
   };
-  engineLogs.push(entry);
-  if (engineLogs.length > 300) {
-    engineLogs.shift();
-  }
+  const workspaceId = workspaceContext.getStore() || 'system';
+  const logs = workspaceLogs.get(workspaceId) || [];
+  logs.push(entry);
+  if (logs.length > 300) logs.shift();
+  workspaceLogs.set(workspaceId, logs);
 }
 
 // Parsed Link Session & Storage Retention Manager (Keeps at most 2 separate links' data)
@@ -1367,7 +1424,8 @@ app.post('/api/telegram/upload', async (req, res) => {
 
 // 9. Logs
 app.get('/api/logs', (req, res) => {
-  res.json({ success: true, logs: engineLogs });
+  const workspaceId = (req as any).workspaceId as string;
+  res.json({ success: true, logs: workspaceLogs.get(workspaceId) || [] });
 });
 
 // -------------------------------------------------------------
