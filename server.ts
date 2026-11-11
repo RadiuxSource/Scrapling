@@ -989,6 +989,139 @@ app.post('/api/download', async (req, res) => {
   res.json({ success: true, job_id, job });
 });
 
+// One-time, explicitly authorized copy of the pre-workspace shared queue.
+// The legacy source is intentionally retained as a backup; it is never auto-claimed.
+app.post('/api/nonstop-queue/legacy-migration/claim', async (req, res) => {
+  const configuredToken = (process.env.WORKSPACE_MIGRATION_TOKEN || '').trim();
+  const suppliedToken = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!configuredToken) {
+    return res.status(503).json({ success: false, error: 'Legacy queue migration is disabled. Configure WORKSPACE_MIGRATION_TOKEN first.' });
+  }
+  const expected = Buffer.from(configuredToken);
+  const supplied = Buffer.from(suppliedToken);
+  if (!suppliedToken || expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
+    return res.status(403).json({ success: false, error: 'Invalid migration token.' });
+  }
+
+  const workspaceId = getWorkspaceId();
+  const runtime = getQueueRuntime(workspaceId);
+  if (runtime.restoreStatus === 'restoring' || runtime.restoreCompleted ||
+      runtime.state.total_items > 0 || runtime.state.pending_items.length > 0 || runtime.currentItem) {
+    return res.status(409).json({ success: false, error: 'This browser workspace already has queue activity. Migration was not started.' });
+  }
+
+  const targetRowId = queueWorkspaceRowId(workspaceId);
+  const targetCheckpoint = queueCheckpointPath(workspaceId);
+  const legacyCheckpoint = path.join(LOGS_DIR, 'nonstop-queue.json');
+  if (fs.existsSync(targetCheckpoint)) {
+    return res.status(409).json({ success: false, error: 'A workspace queue checkpoint already exists. Migration will not overwrite it.' });
+  }
+
+  const config = getSupabaseQueueConfig();
+  let legacyState: any = null;
+  let source: 'supabase' | 'local' | null = null;
+  if (config) {
+    const existingTarget = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.${encodeURIComponent(targetRowId)}&select=id`, {
+      headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+    });
+    if (!existingTarget.ok) return res.status(502).json({ success: false, error: `Could not check destination queue: HTTP ${existingTarget.status}` });
+    const targetRows = await existingTarget.json() as any[];
+    if (Array.isArray(targetRows) && targetRows.length) {
+      return res.status(409).json({ success: false, error: 'A Supabase workspace queue already exists. Migration will not overwrite it.' });
+    }
+
+    const legacyResponse = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.main&select=state`, {
+      headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+    });
+    if (!legacyResponse.ok) return res.status(502).json({ success: false, error: `Could not read legacy Supabase queue: HTTP ${legacyResponse.status}` });
+    const legacyRows = await legacyResponse.json() as Array<{ state?: any }>;
+    if (Array.isArray(legacyRows) && legacyRows[0]?.state) {
+      legacyState = legacyRows[0].state;
+      source = 'supabase';
+    }
+  }
+
+  if (!legacyState && fs.existsSync(legacyCheckpoint)) {
+    try {
+      legacyState = JSON.parse(fs.readFileSync(legacyCheckpoint, 'utf-8'));
+      source = 'local';
+    } catch {
+      return res.status(422).json({ success: false, error: 'The legacy local queue checkpoint is unreadable. No data was changed.' });
+    }
+  }
+  if (!legacyState || !Array.isArray(legacyState.pending_items)) {
+    return res.status(404).json({ success: false, error: 'No readable legacy queue was found. No data was changed.' });
+  }
+
+  const safeState = {
+    is_running: legacyState.pending_items.length > 0 || Boolean(legacyState.current_item),
+    total_items: Number(legacyState.total_items) || legacyState.pending_items.length,
+    current_index: Number(legacyState.current_index) || 0,
+    completed_count: Number(legacyState.completed_count) || 0,
+    failed_count: Number(legacyState.failed_count) || 0,
+    pending_items: legacyState.pending_items.filter((item: any) => item && typeof item.media_url === 'string' && item.media_url.trim()),
+    current_item: legacyState.current_item && typeof legacyState.current_item.media_url === 'string' ? legacyState.current_item : null,
+    saved_at: Date.now(),
+  };
+
+  if (config) {
+    const writeResponse = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.${encodeURIComponent(targetRowId)}`, {
+      method: 'POST',
+      headers: {
+        apikey: config.key,
+        Authorization: `Bearer ${config.key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=ignore-duplicates,return=minimal',
+      },
+      body: JSON.stringify({ id: targetRowId, state: safeState, updated_at: new Date().toISOString() }),
+    });
+    if (!writeResponse.ok) return res.status(502).json({ success: false, error: `Could not copy legacy queue to Supabase: HTTP ${writeResponse.status}` });
+
+    const verifyResponse = await fetch(`${config.url}/rest/v1/vortex_queue_state?id=eq.${encodeURIComponent(targetRowId)}&select=state`, {
+      headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+    });
+    if (!verifyResponse.ok) return res.status(502).json({ success: false, error: 'Could not verify the copied Supabase queue. The legacy source was retained.' });
+    const verifyRows = await verifyResponse.json() as Array<{ state?: any }>;
+    if (!verifyRows[0]?.state || !Array.isArray(verifyRows[0].state.pending_items)) {
+      return res.status(502).json({ success: false, error: 'Supabase did not confirm the copied queue. The legacy source was retained.' });
+    }
+    Object.assign(safeState, verifyRows[0].state);
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(targetCheckpoint), { recursive: true });
+    const tempPath = `${targetCheckpoint}.migration.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(safeState), { encoding: 'utf-8', flag: 'wx' });
+    fs.renameSync(tempPath, targetCheckpoint);
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: `Could not write workspace checkpoint: ${error.message}. Legacy source was retained.` });
+  }
+
+  runtime.state.pending_items = [
+    ...(safeState.current_item ? [safeState.current_item] : []),
+    ...safeState.pending_items,
+  ];
+  runtime.state.total_items = safeState.total_items;
+  runtime.state.current_index = safeState.current_index;
+  runtime.state.completed_count = safeState.completed_count;
+  runtime.state.failed_count = safeState.failed_count;
+  runtime.state.is_running = runtime.state.pending_items.length > 0;
+  runtime.restoreStatus = 'success';
+  runtime.restoreCompleted = true;
+  runtime.restoreMessage = `Legacy queue copied from ${source}. ${runtime.state.pending_items.length} unfinished download(s) recovered.`;
+  runtime.restoreNoticeUntil = Date.now() + 45_000;
+  if (config) await persistNonstopQueueState(workspaceId);
+  if (runtime.state.pending_items.length) void processNextNonstopItem(workspaceId);
+
+  return res.json({
+    success: true,
+    source,
+    recovered_items: runtime.state.pending_items.length,
+    legacy_source_retained: true,
+    message: 'Legacy queue copied into this browser workspace. The old shared source was not deleted.',
+  });
+});
+
 // Queue restore controls are scoped to the signed browser workspace.
 app.get('/api/nonstop-queue/restore-status', async (_req, res) => {
   const workspaceId = getWorkspaceId();
