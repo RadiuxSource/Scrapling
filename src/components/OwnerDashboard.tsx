@@ -10,6 +10,7 @@ export const OwnerDashboard: React.FC = () => {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [selected, setSelected] = useState<any>(null);
   const [query, setQuery] = useState('');
+  const [nameDraft, setNameDraft] = useState('');
 
   const refresh = useCallback(async () => {
     const response = await fetch('/api/owner/summary');
@@ -45,6 +46,7 @@ export const OwnerDashboard: React.FC = () => {
     const data = await response.json();
     if (!response.ok || !data.success) { setError(data.error || 'Workspace not found.'); return; }
     setSelected(data.workspace);
+    setNameDraft(data.workspace.name || '');
   };
   const resumeCrawl = async (browserId: string, taskId: string) => {
     const response = await fetch('/api/owner/workspaces/' + encodeURIComponent(browserId) + '/crawls/' + encodeURIComponent(taskId) + '/resume', { method: 'POST' });
@@ -52,6 +54,15 @@ export const OwnerDashboard: React.FC = () => {
     if (!response.ok || !data.success) { setError(data.error || 'Could not resume crawl.'); return; }
     setError('Crawl request replay started as ' + data.task_id);
     await refresh(); await openWorkspace(browserId);
+  };
+  const saveWorkspaceName = async () => {
+    if (!selected?.browser_id || !nameDraft.trim()) return;
+    const response = await fetch('/api/owner/workspaces/' + encodeURIComponent(selected.browser_id) + '/name', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: nameDraft })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) { setError(data.error || 'Could not save browser name.'); return; }
+    await refresh(); await openWorkspace(selected.browser_id);
   };
   const stopWorkspace = async (id: string) => {
     if (!window.confirm('Stop active engine processes and pause this browser workspace queue?')) return;
@@ -115,7 +126,7 @@ export const OwnerDashboard: React.FC = () => {
           {!selected ? <div className="owner-empty owner-detail-empty"><Activity size={25}/><h2>Select a browser</h2><p>Inspect its task history, queue checkpoint, recent errors, storage counts and sanitized Telegram setup.</p></div> : <>
             <div className="owner-panel-head"><div><h2>{selected.browser_id}</h2><p className="owner-muted">{selected.name || 'Unnamed browser'} · {selected.status}</p></div><button className="owner-stop" onClick={() => void stopWorkspace(selected.browser_id)}><StopCircle size={14}/> Stop tasks</button></div>
             <div className="owner-detail">
-              <h3>Workspace</h3><dl><dt>Created</dt><dd>{selected.created_at ? new Date(selected.created_at).toLocaleString() : 'Unknown'}</dd><dt>Last seen</dt><dd>{selected.last_seen_at ? new Date(selected.last_seen_at).toLocaleString() : 'Unknown'}</dd><dt>Workspace key</dt><dd>{selected.workspace_id}</dd></dl>
+              <h3>Workspace name</h3><div className="owner-name-edit"><input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} maxLength={50} placeholder="Optional friendly browser name"/><button onClick={() => void saveWorkspaceName()}>Save name</button></div><h3>Workspace</h3><dl><dt>Created</dt><dd>{selected.created_at ? new Date(selected.created_at).toLocaleString() : 'Unknown'}</dd><dt>Last seen</dt><dd>{selected.last_seen_at ? new Date(selected.last_seen_at).toLocaleString() : 'Unknown'}</dd><dt>Workspace key</dt><dd>{selected.workspace_id}</dd></dl>
               <h3>Queue checkpoint</h3><pre>{JSON.stringify(selected.activity.queue || { status: 'No checkpoint found' }, null, 2)}</pre>
               <h3>Telegram configuration (secrets masked)</h3><pre>{JSON.stringify(selected.settings, null, 2)}</pre>
               <h3>Recent crawls</h3>

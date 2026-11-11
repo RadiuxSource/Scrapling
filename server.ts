@@ -1307,6 +1307,7 @@ app.post('/api/nonstop-queue/restore-cancel', (_req, res) => {
   runtime.restoreController?.abort();
   runtime.restoreNoticeUntil = Date.now() + 45_000;
   addLog('warn', runtime.restoreMessage);
+  void recordOperationalEvent(ROOT_DIR, { category: 'queue-restore', summary: 'Browser user cancelled queue restoration', workspaceId: getWorkspaceId(), details: { restore_status: runtime.restoreStatus, message: runtime.restoreMessage } });
   res.json({ success: true, restore: { status: runtime.restoreStatus, message: runtime.restoreMessage } });
 });
 
@@ -1459,6 +1460,7 @@ app.delete('/api/jobs', (req, res) => {
     }
   }
   addLog('info', `Cleared ${cleared} finished/failed jobs from queue`);
+  void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser cleared finished/failed job history', workspaceId: getWorkspaceId(), details: { jobs_cleared: cleared } });
   res.json({ success: true, cleared });
 });
 
@@ -1582,6 +1584,7 @@ app.delete('/api/downloads/:filename', (req, res) => {
       fs.unlinkSync(filePath);
       deletedFile = true;
       addLog('info', `Deleted downloaded video file: ${fileName}`);
+      void recordOperationalEvent(ROOT_DIR, { category: 'storage', summary: 'Browser deleted a downloaded media file', workspaceId: getWorkspaceId(), details: { filename: fileName } });
     }
 
     // Also remove associated report in reports/

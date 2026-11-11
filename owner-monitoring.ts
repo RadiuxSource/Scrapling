@@ -87,6 +87,7 @@ async function sendActionMessage(root: string, text: string, actionId?: string, 
     return result?.message_id ?? null;
   } catch (error: any) {
     console.error('[Owner monitoring] Telegram delivery failed:', error.message);
+    if (actionId) appendOperationalDetail(root, actionId, 'Telegram delivery failed for ' + (phase || 'event') + ': ' + error.message);
     return null;
   }
 }
@@ -102,10 +103,12 @@ export async function recordOperationalEvent(root: string, event: {
     '<b>Event:</b> ' + html(event.summary) + '\n' +
     '<b>Action ID:</b> <code>' + html(actionId) + '</code>\n' +
     '<b>Time:</b> ' + new Date().toISOString() +
-    (detailLines.length ? '\n' + detailLines.map(x => html(x)).join('\n') : '');
+    (detailLines.length ? '\n' + detailLines.map(x => html(x.slice(0, 350))).join('\n') : '');
   appendOperationalDetail(root, actionId, event.category + ' | ' + event.summary + ' | browser=' + browser + ' | ' + detailLines.join(' | '));
   const phase = event.phase || 'end';
-  const messageId = await sendActionMessage(root, text + (event.workspaceId ? '\n\n<b>More info:</b> /userinfo ' + html(browser) + ' · reply with /logs for this action' : ''), actionId, phase);
+  const withHelp = text + (event.workspaceId ? '\n\n<b>More info:</b> /userinfo ' + html(browser) + ' · reply with /logs for this action' : '');
+  const messageText = withHelp.length > 3800 ? withHelp.slice(0, 3700) + '\n<i>Message shortened; reply with /logs for the complete action record.</i>' : withHelp;
+  const messageId = await sendActionMessage(root, messageText, actionId, phase);
   if (messageId) appendOperationalDetail(root, actionId, 'Telegram ' + phase + '_message_id=' + messageId);
   return { actionId, messageId };
 }
@@ -297,6 +300,16 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
     if (!id) return res.status(404).json({ success: false, error: 'Browser workspace not found.' });
     res.json({ success: true, workspace: loadWorkspaceSummary(options.rootDir, id) });
+  });
+  app.post('/api/owner/workspaces/:browserId/name', ownerMiddleware, (req: Request, res: Response) => {
+    const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 50) : '';
+    if (!id) return res.status(404).json({ success: false, error: 'Browser workspace not found.' });
+    if (!name) return res.status(400).json({ success: false, error: 'A non-empty name (max 50 characters) is required.' });
+    const file = metaFile(options.rootDir, id); const metadata = safeJson(file, {});
+    atomicJson(file, { ...metadata, name, name_updated_at: Date.now() });
+    void recordOperationalEvent(options.rootDir, { category: 'workspace', summary: 'Owner assigned a browser workspace name', workspaceId: id, details: { name } });
+    res.json({ success: true, name, browser_id: browserLabel(id) });
   });
   app.post('/api/owner/workspaces/:browserId/crawls/:taskId/resume', ownerMiddleware, (req: Request, res: Response) => {
     const id = options.getWorkspaceIds().find(x => browserLabel(x).toLowerCase() === String(req.params.browserId).toLowerCase() || x === req.params.browserId);
