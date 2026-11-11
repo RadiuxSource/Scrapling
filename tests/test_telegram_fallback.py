@@ -19,9 +19,9 @@ from engine.config import resolve_telegram_delivery
 class TelegramFallbackTests(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {
-            "LOG_TELEGRAM_BOT_TOKEN": "DEFAULT_BOT_TOKEN",
+            "LOG_TELEGRAM_BOT_TOKEN": "LOG_ONLY_TOKEN",
             "LOG_TELEGRAM_CHAT_ID": "-100DEFAULT",
-            "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_BOT_TOKEN": "DEFAULT_BOT_TOKEN",
             "TELEGRAM_CHAT_ID": "",
         }, clear=False)
         self.env.start()
