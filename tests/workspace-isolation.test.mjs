@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { after, before, test } from 'node:test';
@@ -109,6 +111,30 @@ test('settings and Telegram secrets stay inside their browser workspace', async 
   assert.equal(firstSettings.telegram_credentials_configured, false);
   assert.equal(JSON.stringify(firstSettings).includes('ci-private-telegram-token'), false);
   assert.equal(JSON.stringify(firstSettings).includes('ci-private-api-hash'), false);
+});
+
+test('reports API strips absolute filesystem paths', async () => {
+  const initial = await fetch(`${baseUrl}/api/reports`);
+  const cookie = cookieFrom(initial);
+  const workspaceId = cookie.slice('vortex_workspace='.length).split('.')[0];
+  const reportsDir = path.join(process.cwd(), 'data', 'workspaces', workspaceId, 'reports');
+  fs.mkdirSync(reportsDir, { recursive: true });
+  fs.writeFileSync(path.join(reportsDir, 'ci-path-redaction.json'), JSON.stringify({
+    output_filename: 'sample-video.mp4',
+    output_file: path.join(reportsDir, '..', 'downloads', 'sample-video.mp4'),
+    output_path: '/srv/private/workspace/downloads/sample-video.mp4',
+    file_path: '/srv/private/workspace/secret.txt',
+  }));
+
+  const response = await request('/api/reports', cookie);
+  assert.equal(response.status, 200);
+  const reports = (await response.json()).reports;
+  const report = reports.find((item) => item.report_id === 'ci-path-redaction');
+  assert.ok(report);
+  assert.equal(report.output_file, 'sample-video.mp4');
+  assert.equal(Object.hasOwn(report, 'output_path'), false);
+  assert.equal(Object.hasOwn(report, 'file_path'), false);
+  assert.equal(JSON.stringify(report).includes('/srv/private'), false);
 });
 
 test('tampered workspace cookies are rejected and replaced', async () => {
