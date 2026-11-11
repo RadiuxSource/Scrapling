@@ -183,3 +183,22 @@ test('queue restore diagnostics identify the signed browser workspace', async ()
   assert.equal(typeof data.restore.message, 'string');
   assert.ok(data.restore.message.includes(data.restore.browser_id));
 });
+
+
+test('nonstop queue is not accepted without a verified durable Supabase backup', async () => {
+  const initial = await fetch(`${baseUrl}/api/nonstop-queue/status`);
+  const cookie = cookieFrom(initial);
+  const response = await request('/api/download-all-nonstop', cookie, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ videos: [{ media_url: 'https://example.com/video.mp4', title: 'CI backup test' }] }),
+  });
+  assert.equal(response.status, 503);
+  const data = await response.json();
+  assert.equal(data.success, false);
+  assert.match(data.error, /durably backed up to Supabase/i);
+  const status = await request('/api/nonstop-queue/status', cookie);
+  const queue = (await status.json()).queue;
+  assert.equal(queue.is_running, true);
+  assert.equal(queue.durable_backup.confirmed, false);
+});
