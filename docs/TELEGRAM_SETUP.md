@@ -49,7 +49,7 @@ The Bot API upload path may split larger media into smaller parts. When optional
 The deployment operator configures these server-side environment variables:
 
 - `OWNER_ACCESS_SECRET`: long random secret for the protected owner dashboard API.
-- `OWNER_TELEGRAM_USER_ID`: numeric Telegram user ID allowed to use owner commands.
+- `OWNER_TELEGRAM_USER_ID`: numeric Telegram user ID allowed to use owner commands. Get this number by messaging `@userinfobot` from your own Telegram account; use the numeric ID, not your username.
 - `LOG_TELEGRAM_CHAT_ID`: private log group/channel destination.
 - `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. If omitted, `TELEGRAM_BOT_TOKEN` is used as the default bot.
 
@@ -73,4 +73,4 @@ The log group is operational-only. User media uploads continue to use the config
 
 You do not need a separate group if you already have a Telegram supergroup with Topics enabled. Add the default monitoring bot as an administrator with permission to manage topics. If `LOG_TELEGRAM_THREAD_ID` is blank, Vortex attempts to create a **Vortex Operational Logs** topic automatically using the Bot API. If topic creation is unavailable, it falls back to posting in the main group. You can instead set `LOG_TELEGRAM_THREAD_ID` to an existing topic ID.
 
-The Bot API cannot create a brand-new group or supergroup. A human group owner must create that group and add the bot; Vortex can then create a topic inside it when the required permissions are granted.
+The default bot username is displayed publicly in the Telegram Hub and can also be read from `/api/telegram/default-bot`. The Bot API cannot create a brand-new group or supergroup. A human group owner must create that group and add the bot; Vortex can then create a topic inside it when the required permissions are granted.

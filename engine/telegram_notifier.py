@@ -32,8 +32,12 @@ class TelegramNotifier:
         self.bot_token = delivery["bot_token"]
         self.chat_id = delivery["chat_id"]
         self.delivery_source = delivery["source"]
-        self.api_id = (api_id or delivery.get("api_id") or "").strip()
-        self.api_hash = (api_hash or delivery.get("api_hash") or "").strip()
+        if delivery["source"] == "custom":
+            self.api_id = (api_id or delivery.get("api_id") or "").strip()
+            self.api_hash = (api_hash or delivery.get("api_hash") or "").strip()
+        else:
+            self.api_id = ""
+            self.api_hash = ""
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=2)
