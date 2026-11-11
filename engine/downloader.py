@@ -537,15 +537,10 @@ class VideoDownloader:
             attempt_opts = dict(ydl_opts)
             if is_youtube:
                 # BgUtils generates fresh video-bound PO tokens on demand.
-                pot_home = os.environ.get(
-                    "YTDLP_POT_PROVIDER_HOME",
-                    "/opt/bgutil-ytdlp-pot-provider/server",
-                )
                 attempt_opts["extractor_args"] = {
                     "youtube": (
                         {"player_client": [player_client]} if player_client else {}
-                    ),
-                    "youtubepot-bgutilscript": {"server_home": [pot_home]},
+                    )
                 }
             if player_client:
                 logger.warning(
