@@ -111,6 +111,7 @@ function restoreWorkspaceJobs(workspaceId = getWorkspaceId()): void {
         job.error = 'The server restarted before this download finished. The download was not resumed; completed files and nonstop queue recovery are managed separately.';
         job.finished_at = Date.now();
         persistWorkspaceJob(job, workspaceId);
+        void recordOperationalEvent(ROOT_DIR, { category: 'download', summary: 'Download interrupted by server restart', workspaceId, actionId: job.job_id, phase: 'end', details: { job_id: job.job_id, title: job.title, previous_status: saved.status, outcome: 'interrupted_by_restart', error: job.error } });
       }
       jobs.set(fileJobId, job);
     } catch (error: any) {
@@ -316,6 +317,7 @@ function registerParsedLink(rawUrl: string): ParsedLinkSession | undefined {
   const session: ParsedLinkSession = { url: cleanUrl, domain, parsedAt: Date.now(), outputFiles: new Set<string>(), reportFiles: new Set<string>(), jobIds: new Set<string>() };
   sessions.push(session);
   addLog('info', `[Storage Manager] Registered parsed website (#${sessions.length}): ${cleanUrl}`);
+  void recordOperationalEvent(ROOT_DIR, { category: 'website', summary: 'Browser registered a website for inspection', workspaceId, details: { url: cleanUrl, domain, session_number: sessions.length } });
   if (sessions.length > 2) purgeOlderSessionsData(workspaceId);
   return session;
 }
@@ -932,6 +934,7 @@ app.post('/api/settings', (req, res) => {
     }
     fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2));
     addLog('info', 'Updated configuration settings');
+    void recordOperationalEvent(ROOT_DIR, { category: 'settings', summary: 'Browser updated workspace settings', workspaceId: getWorkspaceId(), details: { telegram_bot_supplied: Boolean(merged.telegram_bot_token), telegram_channel_supplied: Boolean(merged.telegram_chat_id), telegram_pair_complete: Boolean(merged.telegram_bot_token && merged.telegram_chat_id), auto_upload_telegram: Boolean(merged.auto_upload_telegram), max_concurrent_downloads: merged.max_concurrent_downloads, default_resolution: merged.default_resolution } });
     if (merged.telegram_chat_id) void ensureWorkspaceTelegramInvite(ROOT_DIR, getWorkspaceId());
    const safeSettings = {
   ...merged,
@@ -1864,7 +1867,7 @@ async function restoreAllWorkspaceState() {
   const supabaseConfigured = Boolean(getSupabaseQueueConfig());
   for (let offset = 0; offset < workspaceIds.length; offset += 4) {
     const batch = workspaceIds.slice(offset, offset + 4);
-    await Promise.all(batch.map(async (workspaceId) => {
+    await Promise.all(batch.map(async (workspaceId) => workspaceContext.run(workspaceId, async () => {
       try {
         restoreWorkspaceJobs(workspaceId);
         getWorkspaceCrawlTasks(workspaceId);
@@ -1894,7 +1897,7 @@ async function restoreAllWorkspaceState() {
         console.error('[Workspace] Startup recovery failed for', workspaceId, error.message);
         void recordOperationalEvent(ROOT_DIR, { category: 'workspace-recovery', summary: 'Workspace startup recovery failed', workspaceId, details: { error: error.message } });
       }
-    }));
+    })));
   }
 }
 
@@ -1911,8 +1914,8 @@ async function bootstrapServer() {
       workspaces_checked: startupQueueRestoreSummary.length,
       queues_resumed: resumed,
       restore_failures: failed,
-      browsers: JSON.stringify(startupQueueRestoreSummary.slice(0, 20)),
-      additional_browser_summaries_omitted: Math.max(0, startupQueueRestoreSummary.length - 20),
+      browsers: JSON.stringify(startupQueueRestoreSummary.slice(0, 6)),
+      additional_browser_summaries_omitted: Math.max(0, startupQueueRestoreSummary.length - 6),
     },
   });
 }
