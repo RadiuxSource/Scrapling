@@ -281,7 +281,7 @@ The Express server exposes the application API, including:
 | `GET /api/downloads` | List downloaded files |
 | `GET /api/reports` | List download reports |
 
-The API is intended to be used by the Vortex frontend. Workspace isolation is being rolled out incrementally; do not expose the app as a shared public service until every data-bearing API and file operation has been isolated.
+The API is intended to be used by the Vortex frontend. Data-bearing API routes use the signed browser workspace context; deployment-wide infrastructure credentials and resources remain shared.
 
 ## Troubleshooting
 
@@ -340,14 +340,14 @@ The API is intended to be used by the Vortex frontend. Workspace isolation is be
 - Application settings are stored in each workspace's `data/workspaces/<workspace-id>/settings.json`. Telegram bot token, API hash, destination chat, thread, and auto-upload preferences therefore belong to the browser workspace that configured them.
 - Python engine processes receive that workspace's settings-file path. Deployment-wide Telegram environment variables are deliberately blanked for these app-launched processes, and the engine no longer inherits shared Telegram environment defaults. This prevents one anonymous workspace from silently using another workspace's Telegram destination.
 - **Legacy settings:** the old root-level `settings.json` and deployment-wide `TELEGRAM_*` / `AUTO_UPLOAD_TELEGRAM` values are not automatically copied into browser workspaces. Each browser must configure its own Telegram settings. This avoids silently exposing or reusing an existing owner's credentials.
-- **Still not isolated:** crawler task records are workspace-scoped in memory but are not durable across a server restart. Server-wide operational resources and deployment-level Supabase queue credentials remain shared infrastructure; do not treat anonymous workspaces as separate trusted accounts.
+- **Shared infrastructure boundary:** server-wide operational resources and deployment-level Supabase queue credentials remain shared infrastructure; anonymous browser workspaces are not separate trusted accounts.
 - **Legacy file handling:** files and reports already present in the old shared `downloads/` and `reports/` folders are left untouched and are not shown in a new workspace's file library. They are not automatically assigned to the first browser that visits, which could disclose another user's files.
 - **Legacy queue migration:** the old shared Supabase row with ID `main` and local `logs/nonstop-queue.json` are deliberately left untouched. They are not automatically assigned to whichever browser visits first, because that could expose the old owner's queue to another user. New queues use workspace-specific rows and checkpoints.
 - Extraction behavior was not changed.
 - Phase 5 scopes crawl task status/active-crawl guards and app/Telegram settings by workspace; existing shared settings and Telegram environment values are intentionally not auto-migrated.
 - **Phase 6:** crawl task history/results are now persisted in each workspace's `logs/crawl-tasks.json` using atomic file replacement. After a restart, completed/failed task results remain available to that same browser; a task that was still running is marked failed with a clear restart message rather than remaining stuck forever. The crawl itself is not resumed after restart; the independent nonstop download queue recovery remains unchanged.
 - Telegram bot token and API hash remain masked in settings responses. Saving unrelated settings with blank masked-secret fields now preserves the workspace's existing credentials instead of accidentally erasing them.
-- Phase 4 keeps new downloads, reports, and job progress files in `data/workspaces/<workspace-id>/`; file listing, streaming, download, deletion, report access, Telegram upload lookup, and two-link retention are workspace-scoped. Existing files in the former shared folders are intentionally not auto-migrated.
+- **Phase 7 implemented (11/11):** added `Cache-Control: private, no-store, max-age=0`, `Pragma: no-cache`, and `Vary: Cookie` to `/api/*` responses so browsers and shared reverse proxies do not reuse private API responses across workspace cookies. This is defense-in-depth; workspace scoping remains the actual access boundary.
 
 
 #### Queue restore timeout and notification visibility
