@@ -59,13 +59,17 @@ const workspaceJobs = new Map<string, Map<string, JobStatus>>();
 function getWorkspaceId(): string {
   return workspaceContext.getStore() || 'system';
 }
+function workspaceStoragePaths(workspaceId = getWorkspaceId()) {
+  if (!/^[0-9a-f-]{36}$/i.test(workspaceId)) throw new Error('Invalid browser workspace identifier');
+  const root = path.join(ROOT_DIR, 'data', 'workspaces', workspaceId);
+  const paths = { root, downloads: path.join(root, 'downloads'), reports: path.join(root, 'reports'), logs: path.join(root, 'logs') };
+  [paths.downloads, paths.reports, paths.logs, path.join(paths.logs, 'jobs')].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
+  return paths;
+}
 function getWorkspaceJobs(): Map<string, JobStatus> {
   const workspaceId = getWorkspaceId();
   let jobs = workspaceJobs.get(workspaceId);
-  if (!jobs) {
-    jobs = new Map<string, JobStatus>();
-    workspaceJobs.set(workspaceId, jobs);
-  }
+  if (!jobs) { jobs = new Map<string, JobStatus>(); workspaceJobs.set(workspaceId, jobs); }
   return jobs;
 }
 
@@ -149,183 +153,85 @@ function addLog(level: 'info' | 'warn' | 'error', message: string) {
   workspaceLogs.set(workspaceId, logs);
 }
 
-// Parsed Link Session & Storage Retention Manager (Keeps at most 2 separate links' data)
+// Parsed link sessions are private to each anonymous browser workspace.
 interface ParsedLinkSession {
-  url: string;
-  domain: string;
-  parsedAt: number;
-  outputFiles: Set<string>;
-  reportFiles: Set<string>;
-  jobIds: Set<string>;
+  url: string; domain: string; parsedAt: number;
+  outputFiles: Set<string>; reportFiles: Set<string>; jobIds: Set<string>;
 }
-
-const parsedLinkSessions: ParsedLinkSession[] = [];
-
+const workspaceParsedLinkSessions = new Map<string, ParsedLinkSession[]>();
+function getParsedLinkSessions(workspaceId = getWorkspaceId()): ParsedLinkSession[] {
+  let sessions = workspaceParsedLinkSessions.get(workspaceId);
+  if (!sessions) { sessions = []; workspaceParsedLinkSessions.set(workspaceId, sessions); }
+  return sessions;
+}
 function registerParsedLink(rawUrl: string): ParsedLinkSession | undefined {
   const cleanUrl = (rawUrl || '').trim();
   if (!cleanUrl) return;
-
+  const workspaceId = getWorkspaceId(), sessions = getParsedLinkSessions(workspaceId);
   let domain = cleanUrl;
-  try {
-    domain = new URL(cleanUrl).hostname;
-  } catch {}
-
-  // Check if identical to the current active session
-  const lastSession = parsedLinkSessions[parsedLinkSessions.length - 1];
-  if (lastSession && (lastSession.url === cleanUrl || lastSession.domain === domain)) {
-    lastSession.parsedAt = Date.now();
-    return lastSession;
-  }
-
-  // New separate link parsed
-  const session: ParsedLinkSession = {
-    url: cleanUrl,
-    domain,
-    parsedAt: Date.now(),
-    outputFiles: new Set<string>(),
-    reportFiles: new Set<string>(),
-    jobIds: new Set<string>(),
-  };
-
-  parsedLinkSessions.push(session);
-  addLog('info', `[Storage Manager] Registered parsed website (#${parsedLinkSessions.length}): ${cleanUrl}`);
-
-  // Enforce retention policy: Keep data for at most the 2 most recent separate links!
-  // After parsing 2 separate links, remove the older remaining data and downloaded videos completely!
-  if (parsedLinkSessions.length > 2) {
-    purgeOlderSessionsData();
-  }
-
+  try { domain = new URL(cleanUrl).hostname; } catch {}
+  const last = sessions[sessions.length - 1];
+  if (last && (last.url === cleanUrl || last.domain === domain)) { last.parsedAt = Date.now(); return last; }
+  const session: ParsedLinkSession = { url: cleanUrl, domain, parsedAt: Date.now(), outputFiles: new Set<string>(), reportFiles: new Set<string>(), jobIds: new Set<string>() };
+  sessions.push(session);
+  addLog('info', `[Storage Manager] Registered parsed website (#${sessions.length}): ${cleanUrl}`);
+  if (sessions.length > 2) purgeOlderSessionsData(workspaceId);
   return session;
 }
-
-function purgeOlderSessionsData() {
-  if (parsedLinkSessions.length <= 2) return;
-
-  const sessionsToPurge = parsedLinkSessions.slice(0, parsedLinkSessions.length - 2);
-  const retainedSessions = parsedLinkSessions.slice(-2);
-  const retainedUrls = new Set(retainedSessions.map((s) => s.url));
-  const retainedDomains = new Set(retainedSessions.map((s) => s.domain));
-
-  addLog('warn', `[Storage Manager] Enforcing 2-link retention. Purging older remaining data and downloaded videos outside the 2 recent links: ${Array.from(retainedUrls).join(', ')}`);
-
-  let purgedFiles = 0;
-  let purgedReports = 0;
-  let purgedJobs = 0;
-
-  // 1. Purge recorded output files and reports from older sessions
-  for (const session of sessionsToPurge) {
-    for (const filename of session.outputFiles) {
-      const filePath = path.join(DOWNLOADS_DIR, filename);
-      if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-          purgedFiles++;
-        } catch {}
-      }
+function purgeOlderSessionsData(workspaceId = getWorkspaceId()) {
+  const sessions = getParsedLinkSessions(workspaceId);
+  if (sessions.length <= 2) return;
+  const storage = workspaceStoragePaths(workspaceId);
+  const oldSessions = sessions.slice(0, -2), keptSessions = sessions.slice(-2);
+  const keptUrls = new Set(keptSessions.map(x => x.url)), keptDomains = new Set(keptSessions.map(x => x.domain));
+  let purgedFiles = 0, purgedReports = 0, purgedJobs = 0;
+  for (const session of oldSessions) {
+    for (const name of session.outputFiles) {
+      const target = path.join(storage.downloads, path.basename(name));
+      if (fs.existsSync(target)) { try { fs.unlinkSync(target); purgedFiles++; } catch {} }
     }
-
-    for (const repFile of session.reportFiles) {
-      const repPath = path.join(REPORTS_DIR, repFile);
-      if (fs.existsSync(repPath)) {
-        try {
-          fs.unlinkSync(repPath);
-        } catch {}
-      }
+    for (const name of session.reportFiles) {
+      const target = path.join(storage.reports, path.basename(name));
+      if (fs.existsSync(target)) { try { fs.unlinkSync(target); purgedReports++; } catch {} }
     }
-
-    for (const jid of session.jobIds) {
-      getWorkspaceJobs().delete(jid);
-      purgedJobs++;
-      const jobFile = path.join(LOGS_DIR, 'jobs', `${jid}.json`);
-      if (fs.existsSync(jobFile)) {
-        try {
-          fs.unlinkSync(jobFile);
-        } catch {}
-      }
+    for (const id of session.jobIds) {
+      getWorkspaceJobs().delete(id); purgedJobs++;
+      const target = path.join(storage.logs, 'jobs', `${id}.json`);
+      if (fs.existsSync(target)) { try { fs.unlinkSync(target); } catch {} }
     }
   }
-
-  // 2. Scan REPORTS_DIR to find reports and associated videos not belonging to the 2 retained links
   try {
-    const reportFiles = fs.readdirSync(REPORTS_DIR).filter((f) => f.endsWith('.json'));
-    for (const rf of reportFiles) {
-      const rPath = path.join(REPORTS_DIR, rf);
+    for (const name of fs.readdirSync(storage.reports).filter(x => x.endsWith('.json'))) {
+      const target = path.join(storage.reports, name);
       try {
-        const content = JSON.parse(fs.readFileSync(rPath, 'utf-8'));
-        const siteUrl = content.site_url || content.page_url || '';
-        let isRetained = false;
-        for (const rUrl of retainedUrls) {
-          if (siteUrl.includes(rUrl) || rUrl.includes(siteUrl)) {
-            isRetained = true;
-            break;
+        const report = JSON.parse(fs.readFileSync(target, 'utf-8'));
+        const source = report.site_url || report.page_url || report.source_url || '';
+        let keep = Array.from(keptUrls).some(url => source && (source.includes(url) || url.includes(source)));
+        if (!keep && source) { try { keep = keptDomains.has(new URL(source).hostname); } catch {} }
+        if (!keep && source) {
+          if (report.output_filename) {
+            const video = path.join(storage.downloads, path.basename(report.output_filename));
+            if (fs.existsSync(video)) { try { fs.unlinkSync(video); purgedFiles++; } catch {} }
           }
-        }
-        if (!isRetained && siteUrl) {
-          try {
-            const parsedHost = new URL(siteUrl).hostname;
-            if (retainedDomains.has(parsedHost)) {
-              isRetained = true;
-            }
-          } catch {}
-        }
-
-        // If not from one of the 2 retained links, delete the report and video file
-        if (!isRetained) {
-          if (content.output_filename) {
-            const vPath = path.join(DOWNLOADS_DIR, content.output_filename);
-            if (fs.existsSync(vPath)) {
-              try {
-                fs.unlinkSync(vPath);
-                purgedFiles++;
-              } catch {}
-            }
-          }
-          if (content.output_file && fs.existsSync(content.output_file)) {
-            try {
-              fs.unlinkSync(content.output_file);
-              purgedFiles++;
-            } catch {}
-          }
-          fs.unlinkSync(rPath);
-          purgedReports++;
+          const output = typeof report.output_file === 'string' ? path.resolve(report.output_file) : '';
+          if (output.startsWith(storage.downloads + path.sep) && fs.existsSync(output)) { try { fs.unlinkSync(output); purgedFiles++; } catch {} }
+          fs.unlinkSync(target); purgedReports++;
         }
       } catch {}
     }
   } catch {}
-
-  // 3. Scan DOWNLOADS_DIR directly to clean any orphan videos or buffers not in the 2 retained links
   try {
-    const allDownloads = fs.readdirSync(DOWNLOADS_DIR);
-    const retainedFileNames = new Set<string>();
-    for (const s of retainedSessions) {
-      for (const f of s.outputFiles) {
-        retainedFileNames.add(f);
-      }
+    const retained = new Set<string>();
+    for (const session of keptSessions) for (const name of session.outputFiles) retained.add(path.basename(name));
+    for (const name of fs.readdirSync(storage.reports).filter(x => x.endsWith('.json'))) {
+      try { const report = JSON.parse(fs.readFileSync(path.join(storage.reports, name), 'utf-8')); if (report.output_filename) retained.add(path.basename(report.output_filename)); } catch {}
     }
-    const currentReports = fs.readdirSync(REPORTS_DIR).filter((f) => f.endsWith('.json'));
-    for (const rf of currentReports) {
-      try {
-        const rep = JSON.parse(fs.readFileSync(path.join(REPORTS_DIR, rf), 'utf-8'));
-        if (rep.output_filename) retainedFileNames.add(rep.output_filename);
-      } catch {}
-    }
-
-    for (const df of allDownloads) {
-      if (df.startsWith('.')) continue;
-      if (!retainedFileNames.has(df)) {
-        try {
-          fs.unlinkSync(path.join(DOWNLOADS_DIR, df));
-          purgedFiles++;
-        } catch {}
-      }
+    for (const name of fs.readdirSync(storage.downloads)) {
+      if (!name.startsWith('.') && !retained.has(name)) { try { fs.unlinkSync(path.join(storage.downloads, name)); purgedFiles++; } catch {} }
     }
   } catch {}
-
-  // 4. Keep strictly the last 2 sessions in memory
-  parsedLinkSessions.splice(0, parsedLinkSessions.length - 2);
-
-  addLog('info', `[Storage Optimization Complete] Purged ${purgedFiles} video files, ${purgedReports} reports, and ${purgedJobs} job logs. Only last 2 parsed links retained.`);
+  sessions.splice(0, sessions.length - 2);
+  addLog('info', `[Storage Optimization Complete] Purged ${purgedFiles} video files, ${purgedReports} reports, and ${purgedJobs} job logs from this workspace. Only its last 2 parsed links are retained.`);
 }
 
 // Active child processes registry for instant termination
@@ -365,9 +271,10 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<a
       return reject(new Error('Server is shutting down; no new engine jobs will be started.'));
     }
     addLog('info', `Executing runner [${action}]`);
+    const storage = workspaceStoragePaths(getWorkspaceId());
     const proc = spawn('python3', ['-m', 'engine.runner', action], {
-      cwd: ROOT_DIR,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: ROOT_DIR, stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, SCRAPLING_DOWNLOADS_DIR: storage.downloads, SCRAPLING_REPORTS_DIR: storage.reports, SCRAPLING_LOGS_DIR: storage.logs, SCRAPLING_SETTINGS_FILE: SETTINGS_FILE },
     });
 
     const runId = `${action}_${Date.now()}_${Math.random()}`;
@@ -748,7 +655,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
           job.finished_at = Date.now();
           queue.completed_count++;
           addLog('info', `[Nonstop Queue] Finished MP4: ${result.output_filename}`);
-          const currentSession = parsedLinkSessions[parsedLinkSessions.length - 1];
+          const currentSession = getParsedLinkSessions()[getParsedLinkSessions().length - 1];
           if (currentSession && result.output_filename) {
             currentSession.outputFiles.add(result.output_filename);
             currentSession.jobIds.add(job_id);
@@ -986,7 +893,7 @@ app.post('/api/download', async (req, res) => {
         addLog('info', `Job [${job_id}] completed: ${result.output_filename}`);
 
         // Associate with current link session for 2-link storage management
-        const currentSession = parsedLinkSessions[parsedLinkSessions.length - 1];
+        const currentSession = getParsedLinkSessions()[getParsedLinkSessions().length - 1];
         if (currentSession && result.output_filename) {
           currentSession.outputFiles.add(result.output_filename);
           currentSession.jobIds.add(job_id);
@@ -1141,7 +1048,7 @@ app.delete('/api/jobs/:id', (req, res) => {
   if (getWorkspaceJobs().has(jobId)) {
     getWorkspaceJobs().delete(jobId);
     // Also remove from disk log if present
-    const jobFile = path.join(LOGS_DIR, 'jobs', `${jobId}.json`);
+    const jobFile = path.join(workspaceStoragePaths().logs, 'jobs', `${jobId}.json`);
     if (fs.existsSync(jobFile)) {
       try {
         fs.unlinkSync(jobFile);
@@ -1159,7 +1066,7 @@ app.delete('/api/jobs', (req, res) => {
     if (job.status === 'completed' || job.status === 'failed') {
       getWorkspaceJobs().delete(id);
       cleared++;
-      const jobFile = path.join(LOGS_DIR, 'jobs', `${id}.json`);
+      const jobFile = path.join(workspaceStoragePaths().logs, 'jobs', `${id}.json`);
       if (fs.existsSync(jobFile)) {
         try {
           fs.unlinkSync(jobFile);
@@ -1174,7 +1081,7 @@ app.delete('/api/jobs', (req, res) => {
 // 5. Jobs Status
 app.get('/api/jobs', (req, res) => {
   // Sync state from logs/jobs if available
-  const jobsDir = path.join(LOGS_DIR, 'jobs');
+  const jobsDir = path.join(workspaceStoragePaths().logs, 'jobs');
   if (fs.existsSync(jobsDir)) {
     const files = fs.readdirSync(jobsDir).filter((f) => f.endsWith('.json'));
     files.forEach((f) => {
@@ -1199,11 +1106,11 @@ app.get('/api/jobs', (req, res) => {
 // 6. Downloaded Files List & Stream
 app.get('/api/downloads', (req, res) => {
   try {
-    const files = fs.readdirSync(DOWNLOADS_DIR);
+    const files = fs.readdirSync(workspaceStoragePaths().downloads);
     const videoFiles = files
       .filter((f) => f.endsWith('.mp4') || f.endsWith('.mkv') || f.endsWith('.webm'))
       .map((fileName) => {
-        const fullPath = path.join(DOWNLOADS_DIR, fileName);
+        const fullPath = path.join(workspaceStoragePaths().downloads, fileName);
         const stats = fs.statSync(fullPath);
         return {
           filename: fileName,
@@ -1225,7 +1132,7 @@ app.get('/api/downloads', (req, res) => {
 // Stream MP4 video with HTTP 206 Partial Content support for in-browser playback
 app.get('/api/downloads/stream/:filename', (req, res) => {
   const fileName = path.basename(req.params.filename);
-  const filePath = path.join(DOWNLOADS_DIR, fileName);
+  const filePath = path.join(workspaceStoragePaths().downloads, fileName);
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).send('File not found');
@@ -1269,7 +1176,7 @@ app.get('/api/downloads/stream/:filename', (req, res) => {
 // Direct file download attachment
 app.get('/api/downloads/file/:filename', (req, res) => {
   const fileName = path.basename(req.params.filename);
-  const filePath = path.join(DOWNLOADS_DIR, fileName);
+  const filePath = path.join(workspaceStoragePaths().downloads, fileName);
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'File not found' });
@@ -1283,7 +1190,7 @@ app.delete('/api/downloads/:filename', (req, res) => {
   try {
     const rawParam = req.params.filename;
     const fileName = path.basename(decodeURIComponent(rawParam));
-    const filePath = path.join(DOWNLOADS_DIR, fileName);
+    const filePath = path.join(workspaceStoragePaths().downloads, fileName);
 
     let deletedFile = false;
     if (fs.existsSync(filePath)) {
@@ -1294,10 +1201,10 @@ app.delete('/api/downloads/:filename', (req, res) => {
 
     // Also remove associated report in reports/
     try {
-      const reports = fs.readdirSync(REPORTS_DIR);
+      const reports = fs.readdirSync(workspaceStoragePaths().reports);
       for (const rep of reports) {
         if (!rep.endsWith('.json')) continue;
-        const repPath = path.join(REPORTS_DIR, rep);
+        const repPath = path.join(workspaceStoragePaths().reports, rep);
         try {
           const content = JSON.parse(fs.readFileSync(repPath, 'utf-8'));
           if (content.output_filename === fileName || content.output_file?.includes(fileName)) {
@@ -1326,14 +1233,14 @@ app.delete('/api/downloads/:filename', (req, res) => {
 // 6b. Storage Management & 2-Link Retention Status
 app.get('/api/storage/status', (req, res) => {
   try {
-    const retainedSessions = parsedLinkSessions.slice(-2);
-    const files = fs.readdirSync(DOWNLOADS_DIR).filter((f) => !f.startsWith('.'));
-    const reports = fs.readdirSync(REPORTS_DIR).filter((f) => f.endsWith('.json'));
+    const retainedSessions = getParsedLinkSessions().slice(-2);
+    const files = fs.readdirSync(workspaceStoragePaths().downloads).filter((f) => !f.startsWith('.'));
+    const reports = fs.readdirSync(workspaceStoragePaths().reports).filter((f) => f.endsWith('.json'));
     
     let totalBytes = 0;
     for (const f of files) {
       try {
-        totalBytes += fs.statSync(path.join(DOWNLOADS_DIR, f)).size;
+        totalBytes += fs.statSync(path.join(workspaceStoragePaths().downloads, f)).size;
       } catch {}
     }
 
@@ -1357,7 +1264,7 @@ app.get('/api/storage/status', (req, res) => {
 
 app.post('/api/storage/purge', (req, res) => {
   try {
-    purgeOlderSessionsData();
+    purgeOlderSessionsData(getWorkspaceId());
     res.json({ success: true, message: 'Purged older remaining data outside the 2 most recent links.' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1367,11 +1274,11 @@ app.post('/api/storage/purge', (req, res) => {
 // 7. JSON Reports
 app.get('/api/reports', (req, res) => {
   try {
-    const files = fs.readdirSync(REPORTS_DIR).filter((f) => f.endsWith('.json'));
+    const files = fs.readdirSync(workspaceStoragePaths().reports).filter((f) => f.endsWith('.json'));
     const reports = files
       .map((f) => {
         try {
-          const content = JSON.parse(fs.readFileSync(path.join(REPORTS_DIR, f), 'utf-8'));
+          const content = JSON.parse(fs.readFileSync(path.join(workspaceStoragePaths().reports, f), 'utf-8'));
           return {
             report_id: f.replace('.json', ''),
             file_name: f,
@@ -1412,7 +1319,7 @@ app.post('/api/telegram/upload', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Filename is required' });
   }
   const cleanName = path.basename(decodeURIComponent(filename));
-  const filePath = path.join(DOWNLOADS_DIR, cleanName);
+  const filePath = path.join(workspaceStoragePaths().downloads, cleanName);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ success: false, error: `File not found: ${cleanName}` });
   }
