@@ -209,11 +209,11 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   const uptime = [Math.floor(uptimeSeconds / 86400) + 'd', Math.floor((uptimeSeconds % 86400) / 3600) + 'h', Math.floor((uptimeSeconds % 3600) / 60) + 'm', (uptimeSeconds % 60) + 's'].join(' ');
   const sendReply = (reply: string) => telegram('sendMessage', { chat_id: chatId, text: reply, ...(threadId ? { message_thread_id: threadId } : {}) });
   if (command === '/start') {
-    await sendReply('VORTEX OWNER MONITORING\\n\\nStatus: Online\\nUptime: ' + uptime + '\\nNode: ' + process.version + '\\nStarted: ' + new Date(Date.now() - process.uptime() * 1000).toISOString() + '\\nKnown browsers: ' + options.getWorkspaceIds().length + '\\nLog destination: connected\\n\\nUse /help to see every command. Owner-only access is enabled.');
+    await sendReply('VORTEX OWNER MONITORING\n\nStatus: Online\nUptime: ' + uptime + '\nNode: ' + process.version + '\nStarted: ' + new Date(Date.now() - process.uptime() * 1000).toISOString() + '\nKnown browsers: ' + options.getWorkspaceIds().length + '\nLog destination: connected\n\nUse /help to see every command. Owner-only access is enabled.');
     return;
   }
   if (command === '/help') {
-    await sendReply('VORTEX OWNER COMMANDS\\n\\n/start — Show online status, server uptime, start time, Node version and known browser count.\\n/help — Show this command guide.\\n/workspaces — List known Browser IDs, activity status, crawls and download-job counts.\\n/userinfo BRW-XXXXXXXXXX — Receive a detailed workspace report; secrets are masked.\\n/botinfos — Receive the Telegram bot/channel configuration inventory; tokens and API hashes are masked.\\n/logs — Reply directly to a queue/crawl/download action message with /logs to receive its full .txt action log.\\n\\nCommands work only in the configured private log group and only for OWNER_TELEGRAM_USER_ID.');
+    await sendReply('VORTEX OWNER COMMANDS\n\n/start — Show online status, server uptime, start time, Node version and known browser count.\n/help — Show this command guide.\n/workspaces — List known Browser IDs, activity status, crawls and download-job counts.\n/userinfo BRW-XXXXXXXXXX — Receive a detailed workspace report; secrets are masked.\n/botinfos — Receive the Telegram bot/channel configuration inventory; tokens and API hashes are masked.\n/logs — Reply directly to a queue/crawl/download action message with /logs to receive its full .txt action log.\n\nCommands work only in the configured private log group and only for OWNER_TELEGRAM_USER_ID.');
     return;
   }
   if (command === '/logs') {
