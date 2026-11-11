@@ -11,7 +11,7 @@ create table if not exists public.vortex_queue_state (
 
 -- Remove legacy CHECK constraints that restrict the id column to the old
 -- shared value ('main'). Workspace-scoped rows use ids like ws_<uuid>.
-do $
+do $queue_migration$
 declare
   constraint_row record;
   id_attnum smallint;
@@ -31,7 +31,7 @@ begin
   loop
     execute format('alter table public.vortex_queue_state drop constraint %I', constraint_row.conname);
   end loop;
-end $;
+end $queue_migration$;
 
 
 alter table public.vortex_queue_state enable row level security;
