@@ -545,9 +545,7 @@ class VideoDownloader:
                     "youtube": (
                         {"player_client": [player_client]} if player_client else {}
                     ),
-                    "youtubepot-bgutilhttp": {
-                        "base_url": ["http://127.0.0.1:4416"]
-                    },
+                    "youtubepot-bgutilscript": {"server_home": [pot_home]},
                 }
             if player_client:
                 logger.warning(

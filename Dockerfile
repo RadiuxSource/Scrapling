@@ -49,4 +49,4 @@ ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "node /opt/bgutil-ytdlp-pot-provider/server/build/main.js --port 4416 & exec npm start"]
+CMD ["npm", "start"]
