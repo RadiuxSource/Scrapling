@@ -272,11 +272,15 @@ export function initializeOwnerMonitoring(app: Express, options: OwnerOptions) {
     const expected = Buffer.from(OWNER_SECRET), actual = Buffer.from(supplied);
     if (!OWNER_SECRET || expected.length !== actual.length || !timingSafeEqual(expected, actual)) return res.status(401).json({ success: false, error: 'Invalid owner secret.' });
     const session = issueSession();
-    res.setHeader('Set-Cookie', COOKIE + '=' + encodeURIComponent(session) + '; Path=/api/owner; HttpOnly; SameSite=Strict; Secure; Max-Age=' + Math.floor(SESSION_TTL / 1000));
+    const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0].trim();
+    const secure = req.secure || forwardedProto === 'https' ? '; Secure' : '';
+    res.setHeader('Set-Cookie', COOKIE + '=' + encodeURIComponent(session) + '; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=' + Math.floor(SESSION_TTL / 1000));
     res.json({ success: true, expires_at: Date.now() + SESSION_TTL });
   });
   app.post('/api/owner/logout', ownerMiddleware, (_req: Request, res: Response) => {
-    res.setHeader('Set-Cookie', COOKIE + '=; Path=/api/owner; HttpOnly; SameSite=Strict; Secure; Max-Age=0');
+    const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0].trim();
+    const secure = req.secure || forwardedProto === 'https' ? '; Secure' : '';
+    res.setHeader('Set-Cookie', COOKIE + '=; Path=/api/owner; HttpOnly; SameSite=Strict' + secure + '; Max-Age=0');
     res.json({ success: true });
   });
   app.get('/api/owner/summary', ownerMiddleware, (_req: Request, res: Response) => {
@@ -337,6 +341,7 @@ export async function ensureWorkspaceTelegramInvite(root: string, workspaceId: s
   const settings = safeJson(path.join(workspaceRoot(root, workspaceId), 'settings.json'), {});
   const customToken = String(settings.telegram_bot_token || '').trim();
   const customChannel = String(settings.telegram_chat_id || '').trim();
+  const customPair = Boolean(customToken && customChannel);
   const token = customToken && customChannel ? customToken : LOG_BOT_TOKEN;
   const channel = customChannel || LOG_CHAT_ID;
   if (!token || !channel) return { status: 'incomplete', reason: 'No complete custom pair or deployment default bot/channel is configured.' };
