@@ -218,6 +218,7 @@ Supabase is optional for local development. It is recommended when deploying on 
 | --- | --- |
 | `SUPABASE_URL` | Your Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Your project's service-role key |
+| `WORKSPACE_SECRET` | A stable random secret (at least 32 random characters) used to sign anonymous browser workspace cookies |
 
 5. Redeploy the application and check the server logs for the message confirming that the queue snapshot was loaded from Supabase.
 
@@ -324,15 +325,13 @@ The API is intended to be used by the Vortex frontend. Authentication and public
 
 ## Fix log
 
-### 11/11 — Per-browser workspace isolation
-- Added signed, persistent browser workspace identity so each browser session can keep its own jobs, crawl state, queue, logs, downloads, settings, and Telegram configuration separate.
-- Workspace files are stored under `data/workspaces/`; keep `WORKSPACE_SECRET` stable across deployments so existing workspace cookies remain valid.
-- Added environment-based `WORKSPACE_SECRET` and one-time `WORKSPACE_MIGRATION_TOKEN` configuration. Do not commit either secret; configure them in the deployment environment.
-- Added a protected legacy-workspace claim flow to migrate the existing single-workspace data into the owner's workspace without deleting the original legacy files.
-- Queue snapshots use workspace-specific Supabase row IDs. Apply the updated `supabase-queue-schema.sql` before enabling multi-workspace queue persistence.
-- Per-workspace Python runner paths are supplied through environment variables so crawler extraction modules retain their existing behavior.
-- Deployment note: Supabase stores queue metadata, not downloaded media. Use persistent storage for files that must survive instance replacement; an interrupted active item is requeued, not guaranteed to resume from an exact byte offset.
-- This feature needs deployment-level verification with multiple browsers and a real Koyeb restart before it can be called production-verified.
+### 11/11 — Privacy isolation (incremental rollout)
+- **Phase 1 implemented:** added a signed, anonymous browser workspace cookie and separated the in-memory Logs feed by workspace. No login or registration is required.
+- The cookie is HTTP-only, SameSite=Lax, and marked Secure when served over HTTPS. The browser reuses its workspace identity automatically.
+- Configure a stable, random `WORKSPACE_SECRET` (at least 32 random characters) in the deployment environment so browser workspace cookies remain valid across server restarts. If it is omitted, the server generates a temporary secret and warns that cookies will be invalidated on restart.
+- Logs generated inside a browser's request/background work context are visible only to that browser workspace. Server-startup and restart-recovery messages outside a browser request are kept in an internal system context and are not exposed through `/api/logs`.
+- **Not yet isolated:** download jobs, crawl state, nonstop queue, downloads, reports, settings, Telegram configuration, and their filesystem paths remain shared until their individual phases are implemented. Do not treat this phase as complete multi-user security.
+- The existing Supabase queue persistence/restore flow and extraction behavior were intentionally left unchanged in this phase.
 
 
 #### Queue restore timeout and notification visibility
