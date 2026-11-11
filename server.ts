@@ -1344,7 +1344,9 @@ app.delete('/api/jobs', (req, res) => {
 app.get('/api/jobs', (req, res) => {
   const workspaceId = getWorkspaceId();
   restoreWorkspaceJobs(workspaceId);
-  const jobsList = Array.from(getWorkspaceJobs().values()).sort((a, b) => b.started_at - a.started_at);
+  const jobsList = Array.from(getWorkspaceJobs().values())
+    .sort((a, b) => b.started_at - a.started_at)
+    .map(({ output_path: _privateOutputPath, ...job }) => job);
   res.json({ success: true, jobs: jobsList });
 });
 
