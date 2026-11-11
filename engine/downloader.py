@@ -297,7 +297,7 @@ class VideoDownloader:
                         downloaded = 0
 
                         with open(temp_download_path, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=256 * 1024):
+                            for chunk in r.iter_content(chunk_size=1024 * 1024):
                                 if chunk:
                                     f.write(chunk)
                                     downloaded += len(chunk)
