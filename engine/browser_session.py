@@ -54,6 +54,29 @@ def export_cookies(context):
     os.chmod(tmp, 0o600)
     tmp.replace(COOKIE)
 
+
+def prepare_youtube_cookies(url="https://www.youtube.com/"):
+    """Reuse the workspace Chromium profile and refresh YouTube cookies automatically."""
+    PROFILE.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            str(PROFILE), headless=True,
+            viewport={"width": 1280, "height": 800},
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        try:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            target = url if (urlparse(url).hostname or "").lower().endswith("youtube.com") else "https://www.youtube.com/"
+            page.goto(safe_url(target), wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(1200)
+            export_cookies(ctx)
+            cookies = ctx.cookies()
+            youtube_cookies = sum(1 for cookie in cookies if "youtube.com" in cookie.get("domain", "") or "google.com" in cookie.get("domain", ""))
+            logger_message = f"Automatically refreshed workspace Chromium cookies ({youtube_cookies} YouTube/Google cookies)."
+            return {"success": True, "cookie_count": len(cookies), "youtube_cookie_count": youtube_cookies, "message": logger_message}
+        finally:
+            ctx.close()
+
 def run_browser_action(payload):
     action = payload.get("action", "status")
     PROFILE.mkdir(parents=True, exist_ok=True)
