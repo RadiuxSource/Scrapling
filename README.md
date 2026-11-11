@@ -460,3 +460,12 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - When a workspace row is missing, recovery checks whether the old shared `main` queue still exists. It never assigns that queue automatically; the restore message explains that the original owner must use the one-time migration claim.
 - Restore status now includes the current pseudonymous Browser ID and workspace key, and distinguishes a genuinely missing workspace checkpoint from an available legacy queue. This helps identify a changed browser cookie or `WORKSPACE_SECRET`.
 - The normal download/extraction path is unchanged. A running item is still retried from its source URL after restart; partially downloaded bytes are not recoverable.
+
+
+### 11/11 — Require durable queue backup before processing
+- Queue persistence now retries transient Supabase failures up to three times (with a timeout on each attempt) and verifies that Supabase returned the exact checkpoint timestamp written for the browser workspace.
+- The nonstop queue API now returns HTTP 503 instead of claiming success when the remote checkpoint cannot be confirmed. The pending items remain visible in the current process, but automatic processing is paused until a later verified backup succeeds.
+- A queue restored after restart is also held until its recovered state has been written and verified in Supabase. This prevents the worker from immediately advancing a queue whose recovery checkpoint cannot be made durable.
+- Queue status now reports whether Supabase backup is configured, whether the latest checkpoint is confirmed, and the last backup error.
+- Added an integration test proving that a queue is not accepted as successfully started when Supabase backup is unavailable.
+- This is fail-safe behavior for new/ongoing work. It cannot reconstruct historical queue items that were already lost before a successful remote checkpoint existed.
