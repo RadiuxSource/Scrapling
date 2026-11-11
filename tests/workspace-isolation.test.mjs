@@ -181,4 +181,5 @@ test('queue restore diagnostics identify the signed browser workspace', async ()
   assert.equal(data.restore.workspace_id, workspaceId);
   assert.equal(data.restore.browser_id, `BRW-${workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase()}`);
   assert.equal(typeof data.restore.message, 'string');
+  assert.ok(data.restore.message.includes(data.restore.browser_id));
 });
