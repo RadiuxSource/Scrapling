@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --upgrade "scrapling[fetchers]" \
     && python -c "from scrapling.fetchers import StealthyFetcher; print('StealthyFetcher import OK')" \
     && scrapling install \
-    && patchright install chromium
+    && patchright install --with-deps chromium
 
 COPY . .
 

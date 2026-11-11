@@ -3,8 +3,8 @@ import base64, ipaddress, json, os, socket
 from pathlib import Path
 from urllib.parse import urlparse
 from patchright.sync_api import sync_playwright
-PROFILE = Path(os.environ["SCRAPLING_BROWSER_PROFILE_DIR"])
-COOKIE = Path(os.environ["YTDLP_COOKIES_FILE"])
+PROFILE = Path(os.environ.get("SCRAPLING_BROWSER_PROFILE_DIR", "data/browser-profile"))
+COOKIE = Path(os.environ.get("YTDLP_COOKIES_FILE", "data/youtube-cookies.txt"))
 STATE = PROFILE / "session-state.json"
 
 def safe_url(value):
@@ -22,6 +22,25 @@ def safe_url(value):
     if any(not ip.is_global for ip in ips):
         raise ValueError("Private, local and reserved destinations are blocked.")
     return value
+
+
+def guard_request(route, request):
+    parsed = urlparse(request.url)
+    if parsed.scheme not in ("http", "https"):
+        return route.continue_()
+    host = (parsed.hostname or "").lower()
+    if host in ("localhost", "localhost.localdomain") or host.endswith((".localhost", ".local", ".internal")):
+        return route.abort()
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            addresses = {ipaddress.ip_address(item[4][0]) for item in socket.getaddrinfo(host, None)}
+        except OSError:
+            return route.abort()
+    if not addresses or any(not address.is_global for address in addresses):
+        return route.abort()
+    return route.continue_()
 
 def export_cookies(context):
     COOKIE.parent.mkdir(parents=True, exist_ok=True)
