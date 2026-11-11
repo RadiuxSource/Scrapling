@@ -164,22 +164,22 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
   return (
     <div className="vortex-view vortex-view-console space-y-6">
       {crawlRecovery && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3" role="status">
+        <div className="rounded-xl border border-[var(--vortex-border)] bg-[var(--vortex-surface)] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3" role="status">
           <div className="flex items-start gap-3 min-w-0">
             {crawlRecovery.status === 'running' ? (
-              <div className="w-2.5 h-2.5 mt-1 rounded-full bg-[var(--accent)] animate-pulse shrink-0" />
+              <div className="w-2.5 h-2.5 mt-1 rounded-full bg-[var(--vortex-accent)] animate-pulse shrink-0" />
             ) : crawlRecovery.status === 'completed' ? (
-              <CheckCircle2 className="w-4 h-4 mt-0.5 text-[var(--success)] shrink-0" />
+              <CheckCircle2 className="w-4 h-4 mt-0.5 text-[var(--vortex-success)] shrink-0" />
             ) : (
-              <AlertCircle className="w-4 h-4 mt-0.5 text-[var(--warning)] shrink-0" />
+              <AlertCircle className="w-4 h-4 mt-0.5 text-[var(--vortex-warning)] shrink-0" />
             )}
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-[var(--text)]">
+              <p className="text-xs font-semibold text-[var(--vortex-text)]">
                 {crawlRecovery.status === 'running' ? 'Reconnected to your active crawl'
                   : crawlRecovery.status === 'completed' ? `Previous crawl restored · ${videos.length} video(s)`
                   : 'Previous crawl was interrupted'}
               </p>
-              <p className="text-xs text-[var(--muted)] mt-0.5 truncate">
+              <p className="text-xs text-[var(--vortex-muted)] mt-0.5 truncate">
                 {crawlRecovery.status === 'failed' ? (crawlRecovery.error || 'The crawl did not finish. You can safely start it again.') : 'This crawl belongs to the current browser workspace.'}
               </p>
             </div>
@@ -189,7 +189,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
               type="button"
               onClick={onResumeCrawl}
               disabled={isScraping}
-              className="px-3.5 py-2 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)] text-xs font-semibold hover:bg-[var(--accent)]/15 disabled:opacity-40 whitespace-nowrap"
+              className="px-3.5 py-2 rounded-lg border border-[var(--vortex-accent)]/40 bg-[var(--vortex-accent)]/10 text-[var(--vortex-accent)] text-xs font-semibold hover:bg-[var(--vortex-accent)]/15 disabled:opacity-40 whitespace-nowrap"
             >
               Resume crawl
             </button>
