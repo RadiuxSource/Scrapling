@@ -140,9 +140,44 @@ interface CrawlTask {
 }
 const workspaceCrawlTasks = new Map<string, Map<string, CrawlTask>>();
 const activeCrawlTaskIds = new Map<string, string>();
+function crawlTasksFile(workspaceId: string) {
+  return path.join(workspaceStoragePaths(workspaceId).logs, 'crawl-tasks.json');
+}
+function persistWorkspaceCrawlTasks(workspaceId: string) {
+  const tasks = workspaceCrawlTasks.get(workspaceId);
+  if (!tasks) return;
+  const target = crawlTasksFile(workspaceId);
+  const temporary = `${target}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(Array.from(tasks.values()), null, 2));
+  fs.renameSync(temporary, target);
+}
 function getWorkspaceCrawlTasks(workspaceId = getWorkspaceId()): Map<string, CrawlTask> {
   let tasks = workspaceCrawlTasks.get(workspaceId);
-  if (!tasks) { tasks = new Map<string, CrawlTask>(); workspaceCrawlTasks.set(workspaceId, tasks); }
+  if (!tasks) {
+    tasks = new Map<string, CrawlTask>();
+    const file = crawlTasksFile(workspaceId);
+    if (fs.existsSync(file)) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        if (Array.isArray(saved)) {
+          for (const item of saved) {
+            if (!item || typeof item.task_id !== 'string' || !item.task_id.startsWith('crawl_')) continue;
+            const task: CrawlTask = item;
+            if (task.status === 'running') {
+              task.status = 'failed';
+              task.error = 'The server restarted while this crawl was running. Start the crawl again; completed download queues remain independently recoverable.';
+              task.finished_at = Date.now();
+            }
+            if (task.status === 'completed' || task.status === 'failed') tasks.set(task.task_id, task);
+          }
+        }
+      } catch (error: any) {
+        console.warn(`[Workspace] Could not restore crawl task history for ${workspaceId}: ${error.message}`);
+      }
+    }
+    workspaceCrawlTasks.set(workspaceId, tasks);
+    persistWorkspaceCrawlTasks(workspaceId);
+  }
   return tasks;
 }
 
@@ -827,6 +862,7 @@ app.post('/api/scrape', (req, res) => {
   const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now() };
   crawlTasks.set(taskId, task);
   activeCrawlTaskIds.set(workspaceId, taskId);
+  persistWorkspaceCrawlTasks(workspaceId);
   addLog('info', `Queued background crawl [${taskId}] for ${cleanUrls.length} URL(s)`);
   res.status(202).json({ success: true, task_id: taskId, status: 'running' });
 
@@ -841,11 +877,13 @@ app.post('/api/scrape', (req, res) => {
       });
       task.status = 'completed';
       task.finished_at = Date.now();
+      persistWorkspaceCrawlTasks(workspaceId);
       addLog('info', `Background crawl [${taskId}] completed: ${task.result?.total_videos_detected ?? 0} video(s) detected`);
     } catch (err: any) {
       task.status = 'failed';
       task.error = err?.message || 'Unknown crawler error';
       task.finished_at = Date.now();
+      persistWorkspaceCrawlTasks(workspaceId);
       addLog('error', `Background crawl [${taskId}] failed: ${task.error}`);
     } finally {
       if (activeCrawlTaskIds.get(workspaceId) === taskId) activeCrawlTaskIds.delete(workspaceId);
@@ -853,6 +891,7 @@ app.post('/api/scrape', (req, res) => {
       for (const [id, oldTask] of crawlTasks.entries()) {
         if (oldTask.finished_at && oldTask.finished_at < expiry) crawlTasks.delete(id);
       }
+      persistWorkspaceCrawlTasks(workspaceId);
     }
   })();
 });
