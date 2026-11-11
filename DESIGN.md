@@ -52,3 +52,15 @@ Typography uses Instrument Sans for interface text and IBM Plex Mono for URLs, c
 ## Quality gate
 
 Before shipping, run the repository type check and production build, Python compilation, and workspace integration tests. Inspect the UI at narrow, intermediate, and wide widths. Verify keyboard focus and reduced-motion behavior. Do not claim visual or live-deployment verification unless it was actually performed.
+
+
+## Taste-skill refinement (11/11/2026)
+
+Applied the design-taste-frontend principles to the existing operator workstation rather than treating Vortex as a marketing landing page:
+
+- Keep the actual scraper UI as the product's primary visual; avoid stock photography, generic dashboard decoration, and invented metrics.
+- Use one material system across the public workspace and private owner console: warm ink ground, mineral surfaces, restrained lime action colour, consistent borders and radii.
+- Keep the active navigation state typographic and precise, with a small underline rather than a floating pill.
+- Remove decorative gradients and heavy shadows from operational surfaces; retain colour only for meaningful status and the primary action.
+- Tighten responsive spacing and control sizing while preserving the existing actions, API calls, queue behaviour, and extraction flow.
+- Motion remains quiet and functional, with reduced-motion support.
