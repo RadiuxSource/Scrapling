@@ -13,7 +13,6 @@ from .scraper import MediaInspector
 from .downloader import VideoDownloader
 from .telegram_notifier import TelegramNotifier
 from .config import load_settings, save_settings, LOGS_DIR, REPORTS_DIR, DOWNLOADS_DIR
-from .browser_session import run_browser_action
 
 JOBS_DIR = LOGS_DIR / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -197,9 +196,6 @@ def main():
                 format_id=payload.get("format_id")
             )
             print(json.dumps(res))
-
-        elif action == "browser-session":
-            print(json.dumps(run_browser_action(payload)))
 
         elif action == "telegram-test":
             settings = load_settings()

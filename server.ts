@@ -422,7 +422,6 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0, actionLogI
         SCRAPLING_DOWNLOADS_DIR: storage.downloads,
         SCRAPLING_REPORTS_DIR: storage.reports,
         SCRAPLING_LOGS_DIR: storage.logs,
-        SCRAPLING_BROWSER_PROFILE_DIR: path.join(storage.root, 'browser-profile'),
         YTDLP_COOKIES_FILE: path.join(storage.root, 'youtube-cookies.txt'),
         SCRAPLING_SETTINGS_FILE: workspaceSettingsFile(getWorkspaceId()),
         TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
@@ -1067,20 +1066,6 @@ res.json({ success: true, settings: safeSettings });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
-});
-
-// Private Chromium profile and exported cookies are scoped to the signed browser workspace.
-app.get('/api/browser-session', async (_req, res) => {
-  try { res.json(await runPythonRunner('browser-session', { action: 'status' }, 30000)); }
-  catch (error: any) { res.status(500).json({ success: false, error: error.message }); }
-});
-app.post('/api/browser-session', async (req, res) => {
-  const { action, url, x, y, text, key, delta } = req.body || {};
-  if (!new Set(['open','screenshot','click','type','key','scroll']).has(action)) return res.status(400).json({ success:false,error:'Unsupported browser action.' });
-  if (action === 'open' && (typeof url !== 'string' || url.length > 2048)) return res.status(400).json({ success:false,error:'A valid URL is required.' });
-  if (action === 'type' && (typeof text !== 'string' || text.length > 2000)) return res.status(400).json({ success:false,error:'Text input is limited to 2000 characters.' });
-  try { res.json(await runPythonRunner('browser-session', { action, url, x, y, text, key, delta }, 90000)); }
-  catch (error: any) { addLog('warn','Workspace browser action failed: '+error.message); res.status(400).json({ success:false,error:error.message }); }
 });
 
 // 2. Dedicated "Test Website"

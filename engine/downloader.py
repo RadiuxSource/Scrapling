@@ -515,7 +515,7 @@ class VideoDownloader:
                 logger.warning("Automatic workspace Chromium cookie refresh failed; continuing with existing/public extraction: %s", browser_err)
 
         # Optional authorized session support. Public extraction remains available
-        # when the workspace Chromium profile has no authenticated session.
+        # when no authorized cookie file is configured.
         cookie_file = os.environ.get("YTDLP_COOKIES_FILE")
         if cookie_file:
             cookie_path = Path(cookie_file).expanduser()
@@ -523,8 +523,8 @@ class VideoDownloader:
                 ydl_opts["cookiefile"] = str(cookie_path)
                 logger.info("yt-dlp authorized cookie file is configured.")
             else:
-                # Cookie export is optional: public extraction must still work
-                # before the user has opened the workspace browser or signed in.
+                # Cookie files are optional; public extraction remains available
+                # when no authorized session file has been supplied.
                 logger.info("No workspace cookie file exists yet; continuing without authorized cookies.")
         browser_cookies = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
         if browser_cookies:

@@ -528,3 +528,11 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Added quality tiers up to 2160p, 1440p, 1080p, 720p, 480p and 360p where the source exposes those heights. Audio-only and sub-360p fragments are removed from the quality selector; requested tiers choose the best available video at or below the selected height.
 - Added secure `YTDLP_COOKIES_FROM_BROWSER` / `YTDLP_COOKIES_FILE` support for authorized YouTube sessions, plus Deno/EJS challenge runtime configuration in the download path. A valid authorized session may still be required when YouTube presents an anti-bot challenge.
 - Existing generic-site extraction and direct-media-first handling are preserved.
+
+
+### 11/11 — Remove unused remote Chromium login panel
+
+- Removed the workspace remote-browser preview and its cookie-export automation. It could not create or authenticate a Google account and only produced anonymous cookies on a fresh cloud profile.
+- YouTube extraction now uses its normal public yt-dlp path first and only uses an explicitly configured authorized cookie file or `YTDLP_COOKIES_FROM_BROWSER` source when supplied. No per-download Chromium launch is performed for cookie refresh.
+- Kept the Chromium/Patchright runtime used by the actual Scrapling dynamic-page extraction engine, and kept the YouTube PO-token provider. These are separate extraction dependencies, not the removed remote-login feature.
+- No changes to the successful direct-media or generic-site extraction fast path are intended.
