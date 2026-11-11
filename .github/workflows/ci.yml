@@ -44,3 +44,6 @@ jobs:
 
       - name: Compile Python engine modules
         run: python -m compileall -q engine
+
+      - name: Test anonymous workspace isolation
+        run: node --test tests/workspace-isolation.test.mjs
