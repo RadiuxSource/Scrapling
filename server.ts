@@ -806,7 +806,11 @@ async function ensureQueueRestored(workspaceId = getWorkspaceId()): Promise<void
   if (runtime.restoreStatus === 'success' && runtime.state.pending_items.length > 0 && !runtime.workerActive && !runtime.dispatchScheduled && !isShuttingDown) {
     runtime.state.is_running = true;
     await persistNonstopQueueState(workspaceId);
-    void processNextNonstopItem(workspaceId);
+    if (runtime.lastRemoteSaveAt >= runtime.latestQueueMutationAt) {
+      void processNextNonstopItem(workspaceId);
+    } else {
+      addLog('error', `Recovered queue is waiting for a verified Supabase backup before resuming: ${runtime.lastRemoteSaveError || 'checkpoint not confirmed'}`);
+    }
   }
 }
 
@@ -1410,6 +1414,11 @@ app.get('/api/nonstop-queue/status', async (_req, res) => {
       completed_count: queue.completed_count,
       failed_count: queue.failed_count,
       pending_count: queue.pending_items.length,
+      durable_backup: {
+        configured: Boolean(getSupabaseQueueConfig()),
+        confirmed: runtime.lastRemoteSaveAt >= runtime.latestQueueMutationAt && runtime.latestQueueMutationAt > 0,
+        last_error: runtime.lastRemoteSaveError,
+      },
     },
   });
 });
