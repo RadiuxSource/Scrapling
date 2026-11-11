@@ -220,11 +220,11 @@ Supabase is optional for local development. It is recommended when deploying on 
 | `SUPABASE_SERVICE_ROLE_KEY` | Your project's service-role key |
 | `WORKSPACE_SECRET` | A stable random secret (at least 32 random characters) used to sign anonymous browser workspace cookies |
 
-5. Redeploy the application and check the server logs for the message confirming that the queue snapshot was loaded from Supabase.
+5. Redeploy the application. Each browser workspace restores its own queue the first time the dashboard requests queue status.
 
 **Security:** The service-role key is a server-only secret. Never put it in a `VITE_*` variable, frontend code, public repository, screenshot, or browser request. Do not share it in issues or chat.
 
-Supabase stores the queue state and pending item metadata, not downloaded video files, browser sessions, logs, or reports. Keep the Supabase project active and within its free-plan limits. If Supabase is not configured or temporarily unavailable, the app can fall back to its local checkpoint, but that fallback cannot survive replacement of an ephemeral instance.
+Supabase stores each browser workspace's queue state and pending item metadata, not downloaded video files, browser sessions, logs, or reports. Keep the Supabase project active and within its free-plan limits. If Supabase is not configured or temporarily unavailable, the app can fall back to its local checkpoint, but that fallback cannot survive replacement of an ephemeral instance.
 
 ### Telegram setup
 
@@ -327,12 +327,15 @@ The API is intended to be used by the Vortex frontend. Workspace isolation is be
 
 ### 11/11 — Privacy isolation (incremental rollout)
 - **Phase 1 implemented:** added a signed, anonymous browser workspace cookie and separated the in-memory Logs feed by workspace. No login or registration is required.
-- **Phase 2 implemented:** individual download-job records are now held in workspace-specific in-memory maps. The Jobs API, cancel, delete, and clear-finished actions operate only on the requesting browser's jobs; process cancellation also checks the owning workspace.
+- **Phase 2 implemented:** download-job records are held in workspace-specific in-memory maps. The Jobs API, cancel, delete, and clear-finished actions operate only on the requesting browser's jobs; process cancellation checks the owning workspace.
+- **Phase 3 implemented:** nonstop queues are isolated by browser workspace. Queue status, enqueue, stop, restore status, and restore cancellation are workspace-scoped. Local checkpoints use workspace-specific filenames, and Supabase snapshots use `ws_<workspace-id>` row IDs.
+- Each browser's queue is restored lazily when that browser connects. On graceful shutdown, every loaded workspace queue is checkpointed independently, and any in-flight item is returned to that workspace's pending list for retry after restart.
 - The cookie is HTTP-only, SameSite=Lax, and marked Secure when served over HTTPS. The browser reuses its workspace identity automatically.
 - Configure a stable, random `WORKSPACE_SECRET` (at least 32 random characters) in the deployment environment so browser workspace cookies remain valid across server restarts. If it is omitted, the server generates a temporary secret and warns that cookies will be invalidated on restart.
 - Logs generated inside a browser's request/background work context are visible only to that browser workspace. Server-startup and restart-recovery messages outside a browser request are kept in an internal system context and are not exposed through `/api/logs`.
-- **Not yet isolated:** download jobs, crawl state, nonstop queue, downloads, reports, settings, Telegram configuration, and their filesystem paths remain shared until their individual phases are implemented. Do not treat this phase as complete multi-user security.
-- The existing Supabase queue persistence/restore flow and extraction behavior were intentionally left unchanged in this phase.
+- **Still not isolated:** crawl state, downloads, reports, settings, Telegram configuration, and their filesystem paths remain shared. Do not treat the app as fully multi-user secure until the remaining phases are complete.
+- **Legacy queue migration:** the old shared Supabase row with ID `main` and local `logs/nonstop-queue.json` are deliberately left untouched. They are not automatically assigned to whichever browser visits first, because that could expose the old owner's queue to another user. New queues use workspace-specific rows and checkpoints.
+- Extraction behavior was not changed.
 
 
 #### Queue restore timeout and notification visibility
