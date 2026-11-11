@@ -59,7 +59,7 @@ async function telegram(method: string, body: Record<string, any>) {
   if (!response.ok || !data.ok) throw new Error(data.description || 'Telegram ' + method + ' failed (' + response.status + ')');
   return data.result;
 }
-function appendActionLog(root: string, actionId: string, line: string) {
+export function appendOperationalDetail(root: string, actionId: string, line: string) {
   const file = path.join(root, 'data', 'owner-monitoring', 'actions', actionId + '.txt');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, '[' + new Date().toISOString() + '] ' + line.replace(/[\r\n]+/g, ' ') + '\n');
@@ -99,7 +99,7 @@ export async function recordOperationalEvent(root: string, event: {
     '<b>Action ID:</b> <code>' + html(actionId) + '</code>\n' +
     '<b>Time:</b> ' + new Date().toISOString() +
     (detailLines.length ? '\n' + detailLines.map(x => html(x)).join('\n') : '');
-  appendActionLog(root, actionId, event.category + ' | ' + event.summary + ' | browser=' + browser + ' | ' + detailLines.join(' | '));
+  appendOperationalDetail(root, actionId, event.category + ' | ' + event.summary + ' | browser=' + browser + ' | ' + detailLines.join(' | '));
   const messageId = await sendActionMessage(root, text + (event.workspaceId ? '\\n\\n<b>More info:</b> /userinfo ' + html(browser) + ' · reply with /logs for this action' : ''), actionId, event.phase || 'end');
   return { actionId, messageId };
 }
@@ -165,7 +165,7 @@ async function handleOwnerCommand(root: string, message: any, options: OwnerOpti
   if (!isOwnerTelegram(message?.from?.id)) return;
   const text = String(message.text || '').trim();
   const chatId = message.chat?.id;
-  if (!chatId) return;
+  if (!chatId || !LOG_CHAT_ID || String(chatId) !== LOG_CHAT_ID) return;
   if (text.startsWith('/logs')) {
     const replyId = message.reply_to_message?.message_id;
     if (!replyId) { await telegram('sendMessage', { chat_id: chatId, text: 'Reply to an action start/end message with /logs to receive its .txt log.' }); return; }

@@ -6,7 +6,7 @@ import { spawn } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dotenv from 'dotenv';
-import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite, browserIdForWorkspace } from './owner-monitoring.js';
+import { initializeOwnerMonitoring, touchWorkspace, recordOperationalEvent, ensureWorkspaceTelegramInvite, browserIdForWorkspace, appendOperationalDetail } from './owner-monitoring.js';
 
 dotenv.config();
 
@@ -220,8 +220,9 @@ function getWorkspaceCrawlTasks(workspaceId = getWorkspaceId()): Map<string, Cra
             const task: CrawlTask = item;
             if (task.status === 'running') {
               task.status = 'failed';
-              task.error = 'The server restarted while this crawl was running. Start the crawl again; completed download queues remain independently recoverable.';
+              task.error = 'The server restarted while this crawl was running. Use the browser Scraper Console to replay the saved crawl request; completed download queues remain independently recoverable.';
               task.finished_at = Date.now();
+              void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Crawl interrupted by server restart; saved request is available to resume', workspaceId, actionId: task.task_id, phase: 'end', details: { task_id: task.task_id, status: 'interrupted_by_restart', command: '/userinfo ' + 'BRW-' + workspaceId.replace(/-/g, '').slice(0, 10).toUpperCase(), recovery: 'POST /api/scrape/resume/' + task.task_id } });
             }
             if (task.status === 'completed' || task.status === 'failed') tasks.set(task.task_id, task);
           }
@@ -362,7 +363,7 @@ function terminateProcessEntry(entry: ActiveProcessEntry) {
 }
 
 // Helper to execute Python runner
-function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<any> {
+function runPythonRunner(action: string, payload: any, timeoutMs = 0, actionLogId?: string): Promise<any> {
   return new Promise((resolve, reject) => {
     if (isShuttingDown) {
       return reject(new Error('Server is shutting down; no new engine jobs will be started.'));
@@ -415,6 +416,7 @@ function runPythonRunner(action: string, payload: any, timeoutMs = 0): Promise<a
         const trimmed = line.trim();
         if (trimmed && !trimmed.startsWith('Deprecated Feature')) {
           addLog('info', `[PyEngine] ${trimmed}`);
+          if (actionLogId) appendOperationalDetail(ROOT_DIR, actionLogId, `[PyEngine] ${trimmed}`);
         }
       });
     });
@@ -762,7 +764,7 @@ async function processNextNonstopItem(workspaceId: string): Promise<void> {
         persistWorkspaceJob(job, workspaceId);
         const result = await runPythonRunner('download-job', {
           job_id, media_url: item.media_url, title: cleanTitle, format_id: item.format_id,
-        });
+        }, 0, job_id);
         if (!queue.is_running) {
           job.status = 'failed'; job.error = 'Halted by user or owner'; job.finished_at = Date.now();
         } else if (result.status === 'completed') {
@@ -960,7 +962,7 @@ app.post('/api/scrape', (req, res) => {
   void (async () => {
     try {
       addLog('info', `Starting deep inspection of ${cleanUrls.length} URL(s) (Offset: ${subpage_offset || 0}, Max Subpages: ${max_subpages ?? 100}, Deep Crawl: ${deep_crawl ?? true})`);
-      task.result = await runPythonRunner('scrape-batch', crawlRequest);
+      task.result = await runPythonRunner('scrape-batch', crawlRequest, 0, taskId);
       task.status = 'completed';
       task.finished_at = Date.now();
       persistWorkspaceCrawlTasks(workspaceId);
@@ -1008,7 +1010,7 @@ app.post('/api/scrape/resume/:id', (req, res) => {
   res.status(202).json({ success: true, task_id: taskId, status: 'running', resumed_from: previous.task_id });
   void (async () => {
     try {
-      task.result = await runPythonRunner('scrape-batch', crawlRequest);
+      task.result = await runPythonRunner('scrape-batch', crawlRequest, 0, taskId);
       task.status = 'completed'; task.finished_at = Date.now();
       persistWorkspaceCrawlTasks(workspaceId);
       void recordOperationalEvent(ROOT_DIR, { category: 'crawl', summary: 'Resumed crawl completed', workspaceId, actionId: taskId, phase: 'end', details: { task_id: taskId, resumed_from: previous.task_id, videos_detected: task.result?.total_videos_detected ?? 0 } });
@@ -1332,6 +1334,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   const runtime = getQueueRuntime(workspaceId);
   const queue = runtime.state;
   const pendingItemsDiscarded = queue.pending_items.length;
+  const inFlightTitle = runtime.currentItem?.title || queue.current_title || null;
   const queueActionId = queueRunIds.get(workspaceId);
   queue.is_running = false;
   queue.pending_items = [];
@@ -1340,7 +1343,7 @@ app.post('/api/nonstop-queue/stop', async (_req, res) => {
   await persistNonstopQueueState(workspaceId);
 
   addLog('warn', 'Halt request received for this browser workspace; terminating its active download processes.');
-  void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser user requested queue termination', workspaceId, actionId: queueActionId, phase: queueActionId ? 'end' : undefined, details: { pending_items_discarded: pendingItemsDiscarded, active_processes: Array.from(activeProcesses.values()).filter(entry => entry.workspaceId === workspaceId).length, completed_count: queue.completed_count, failed_count: queue.failed_count, outcome: 'terminated_by_user' } });
+  void recordOperationalEvent(ROOT_DIR, { category: 'queue', summary: 'Browser user requested queue termination', workspaceId, actionId: queueActionId, phase: queueActionId ? 'end' : undefined, details: { pending_items_discarded: pendingItemsDiscarded, in_flight_item: inFlightTitle, active_processes: Array.from(activeProcesses.values()).filter(entry => entry.workspaceId === workspaceId).length, completed_count: queue.completed_count, failed_count: queue.failed_count, outcome: 'terminated_by_user' } });
   if (queueActionId) queueRunIds.delete(workspaceId);
   for (const [runId, entry] of activeProcesses.entries()) {
     if (entry.workspaceId !== workspaceId) continue;
@@ -1723,7 +1726,14 @@ initializeOwnerMonitoring(app, {
     const entries = Array.from(activeProcesses.values()).filter((entry) => entry.workspaceId === workspaceId);
     entries.forEach((entry) => terminateProcessEntry(entry));
     const runtime = queueRuntimes.get(workspaceId);
-    if (runtime) { runtime.state.is_running = false; runtime.restoreController?.abort(); void persistNonstopQueueState(workspaceId); }
+    if (runtime) {
+      runtime.state.is_running = false; runtime.state.pending_items = []; runtime.currentItem = null; runtime.state.current_title = '';
+      runtime.restoreController?.abort(); void persistNonstopQueueState(workspaceId);
+      for (const job of (workspaceJobs.get(workspaceId)?.values() || [])) {
+        if (!['completed', 'failed'].includes(job.status)) { job.status = 'failed'; job.error = 'Stopped by owner from Control Center'; job.finished_at = Date.now(); persistWorkspaceJob(job, workspaceId); }
+      }
+    }
+    void recordOperationalEvent(ROOT_DIR, { category: 'owner-control', summary: 'Owner stopped browser workspace tasks', workspaceId, details: { active_processes_stopped: entries.length, pending_queue_items_discarded: runtime?.state.pending_items.length || 0 } });
     return { stopped: entries.length, details: entries.map((entry) => entry.action + ':' + entry.id) };
   },
 });
