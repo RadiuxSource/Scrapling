@@ -333,9 +333,14 @@ The API is intended to be used by the Vortex frontend. Workspace isolation is be
 - The cookie is HTTP-only, SameSite=Lax, and marked Secure when served over HTTPS. The browser reuses its workspace identity automatically.
 - Configure a stable, random `WORKSPACE_SECRET` (at least 32 random characters) in the deployment environment so browser workspace cookies remain valid across server restarts. If it is omitted, the server generates a temporary secret and warns that cookies will be invalidated on restart.
 - Logs generated inside a browser's request/background work context are visible only to that browser workspace. Server-startup and restart-recovery messages outside a browser request are kept in an internal system context and are not exposed through `/api/logs`.
-- **Still not isolated:** crawl state, downloads, reports, settings, Telegram configuration, and their filesystem paths remain shared. Do not treat the app as fully multi-user secure until the remaining phases are complete.
+- **Phase 4 implemented:** downloaded media, JSON reports, and on-disk job progress records are stored under a workspace-specific directory at `data/workspaces/<workspace-id>/`. The downloads list, video streaming, direct file download, delete/report cleanup, Telegram file upload lookup, report listing, and storage-retention operations use only the requesting browser's workspace.
+- Parsed-link retention tracking is also workspace-specific. The existing two-link retention policy now purges only files and reports belonging to that same browser workspace; it no longer scans or deletes another workspace's files.
+- New Python download/report writes receive workspace-specific storage paths from the server. The downloader and extraction pipeline itself was not modified.
+- **Still not isolated:** crawl task state, application settings, and Telegram configuration remain shared. Do not treat the app as fully multi-user secure until those remaining areas are addressed.
+- **Legacy file handling:** files and reports already present in the old shared `downloads/` and `reports/` folders are left untouched and are not shown in a new workspace's file library. They are not automatically assigned to the first browser that visits, which could disclose another user's files.
 - **Legacy queue migration:** the old shared Supabase row with ID `main` and local `logs/nonstop-queue.json` are deliberately left untouched. They are not automatically assigned to whichever browser visits first, because that could expose the old owner's queue to another user. New queues use workspace-specific rows and checkpoints.
 - Extraction behavior was not changed.
+- Phase 4 keeps new downloads, reports, and job progress files in `data/workspaces/<workspace-id>/`; file listing, streaming, download, deletion, report access, Telegram upload lookup, and two-link retention are workspace-scoped. Existing files in the former shared folders are intentionally not auto-migrated.
 
 
 #### Queue restore timeout and notification visibility
