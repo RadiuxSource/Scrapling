@@ -187,6 +187,7 @@ interface CrawlTask {
   status: 'running' | 'completed' | 'failed';
   started_at: number;
   finished_at?: number;
+  request?: { urls: string[]; deep_crawl: boolean; max_subpages: number; subpage_offset: number };
   result?: any;
   error?: string;
 }
@@ -922,7 +923,13 @@ app.post('/api/scrape', (req, res) => {
 
   for (const u of cleanUrls) registerParsedLink(u);
   const taskId = `crawl_${randomUUID()}`;
-  const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now() };
+  const crawlRequest = {
+    urls: cleanUrls,
+    deep_crawl: deep_crawl !== false,
+    max_subpages: max_subpages !== undefined ? Number(max_subpages) : 100,
+    subpage_offset: Number(subpage_offset) || 0,
+  };
+  const task: CrawlTask = { task_id: taskId, status: 'running', started_at: Date.now(), request: crawlRequest };
   crawlTasks.set(taskId, task);
   activeCrawlTaskIds.set(workspaceId, taskId);
   persistWorkspaceCrawlTasks(workspaceId);
@@ -932,12 +939,7 @@ app.post('/api/scrape', (req, res) => {
   void (async () => {
     try {
       addLog('info', `Starting deep inspection of ${cleanUrls.length} URL(s) (Offset: ${subpage_offset || 0}, Max Subpages: ${max_subpages ?? 100}, Deep Crawl: ${deep_crawl ?? true})`);
-      task.result = await runPythonRunner('scrape-batch', {
-        urls: cleanUrls,
-        deep_crawl: deep_crawl !== false,
-        max_subpages: max_subpages !== undefined ? max_subpages : 100,
-        subpage_offset: subpage_offset || 0,
-      });
+      task.result = await runPythonRunner('scrape-batch', crawlRequest);
       task.status = 'completed';
       task.finished_at = Date.now();
       persistWorkspaceCrawlTasks(workspaceId);
@@ -957,6 +959,13 @@ app.post('/api/scrape', (req, res) => {
       persistWorkspaceCrawlTasks(workspaceId);
     }
   })();
+});
+
+app.get('/api/scrape/tasks', (_req, res) => {
+  const tasks = Array.from(getWorkspaceCrawlTasks().values())
+    .sort((a, b) => b.started_at - a.started_at)
+    .slice(0, 10);
+  res.json({ success: true, tasks });
 });
 
 app.get('/api/scrape/status/:id', (req, res) => {
