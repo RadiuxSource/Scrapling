@@ -13,7 +13,6 @@ from typing import Dict, Any, Optional, Callable
 import yt_dlp
 from .config import DOWNLOADS_DIR, REPORTS_DIR, load_settings
 from .telegram_notifier import TelegramNotifier
-from .browser_session import prepare_youtube_cookies
 
 logger = logging.getLogger("downloader")
 
@@ -503,16 +502,6 @@ class VideoDownloader:
         deno_path = shutil.which("deno")
         if deno_path:
             ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
-
-        # YouTube-only: reuse the workspace Chromium profile and refresh its
-        # cookies automatically before yt-dlp. Existing signed-in sessions are
-        # reused; a fresh profile only yields anonymous cookies.
-        if is_youtube:
-            try:
-                cookie_result = prepare_youtube_cookies(media_url)
-                logger.info(cookie_result.get("message", "Workspace Chromium cookies refreshed."))
-            except Exception as browser_err:
-                logger.warning("Automatic workspace Chromium cookie refresh failed; continuing with existing/public extraction: %s", browser_err)
 
         # Optional authorized session support. Public extraction remains available
         # when no authorized cookie file is configured.
