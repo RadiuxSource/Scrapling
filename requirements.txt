@@ -7,3 +7,4 @@ patchright
 aiohttp
 browserforge
 telethon
+bgutil-ytdlp-pot-provider==2.0.2

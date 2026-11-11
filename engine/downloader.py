@@ -523,6 +523,7 @@ class VideoDownloader:
         # default client set is always tried first. The extra profiles are
         # deliberately YouTube-only and bounded so normal sites incur no cost.
         youtube_fallback_clients = (
+            "mweb",
             "tv",
             "android_vr",
             "web_embedded",
@@ -534,14 +535,23 @@ class VideoDownloader:
 
         for attempt_index, player_client in enumerate(attempts, start=1):
             attempt_opts = dict(ydl_opts)
-            if player_client:
+            if is_youtube:
+                # BgUtils generates fresh video-bound PO tokens on demand.
+                pot_home = os.environ.get(
+                    "YTDLP_POT_PROVIDER_HOME",
+                    "/opt/bgutil-ytdlp-pot-provider/server",
+                )
                 attempt_opts["extractor_args"] = {
-                    "youtube": {"player_client": [player_client]}
+                    "youtube": (
+                        {"player_client": [player_client]} if player_client else {}
+                    ),
+                    "youtubepot-bgutilscript": {"server_home": [pot_home]},
                 }
+            if player_client:
                 logger.warning(
                     "YouTube default extraction failed; retrying with public player client '%s' (%d/%d).",
                     player_client,
-                    attempt_index,
+                    attempt_index - 1,
                     len(attempts) - 1,
                 )
 

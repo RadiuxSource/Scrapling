@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     ffmpeg \
     curl \
+    git \
     unzip \
     procps \
     ca-certificates \
@@ -16,6 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # yt-dlp uses Deno to solve modern YouTube JavaScript challenges.
 RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
     && deno --version
+
+# Install the matching BgUtils PO Token generator for YouTube only.
+RUN git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil-ytdlp-pot-provider \
+    && cd /opt/bgutil-ytdlp-pot-provider/server \
+    && npm ci \
+    && npx tsc
 
 COPY package*.json ./
 
@@ -36,6 +43,7 @@ COPY . .
 
 RUN npm run build
 
+ENV YTDLP_POT_PROVIDER_HOME=/opt/bgutil-ytdlp-pot-provider/server
 ENV NODE_ENV=production
 ENV PORT=3000
 
