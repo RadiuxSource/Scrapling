@@ -345,6 +345,7 @@ The API is intended to be used by the Vortex frontend. Workspace isolation is be
 - **Legacy queue migration:** the old shared Supabase row with ID `main` and local `logs/nonstop-queue.json` are deliberately left untouched. They are not automatically assigned to whichever browser visits first, because that could expose the old owner's queue to another user. New queues use workspace-specific rows and checkpoints.
 - Extraction behavior was not changed.
 - Phase 5 scopes crawl task status/active-crawl guards and app/Telegram settings by workspace; existing shared settings and Telegram environment values are intentionally not auto-migrated.
+- **Phase 6:** crawl task history/results are now persisted in each workspace's `logs/crawl-tasks.json` using atomic file replacement. After a restart, completed/failed task results remain available to that same browser; a task that was still running is marked failed with a clear restart message rather than remaining stuck forever. The crawl itself is not resumed after restart; the independent nonstop download queue recovery remains unchanged.
 - Phase 4 keeps new downloads, reports, and job progress files in `data/workspaces/<workspace-id>/`; file listing, streaming, download, deletion, report access, Telegram upload lookup, and two-link retention are workspace-scoped. Existing files in the former shared folders are intentionally not auto-migrated.
 
 
