@@ -55,6 +55,18 @@ def export_cookies(context):
     tmp.replace(COOKIE)
 
 
+def _has_authenticated_google_session(cookies):
+    """Require a recognized Google auth cookie on a Google-owned domain."""
+    auth_names = {"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"}
+    now = int(__import__("time").time())
+    return any(
+        cookie.get("name") in auth_names
+        and ("google.com" in cookie.get("domain", "") or "youtube.com" in cookie.get("domain", ""))
+        and (not cookie.get("expires") or int(cookie.get("expires") or 0) == 0 or int(cookie.get("expires") or 0) > now)
+        for cookie in cookies
+    )
+
+
 def prepare_youtube_cookies(url="https://www.youtube.com/"):
     """Reuse the workspace Chromium profile and refresh YouTube cookies automatically."""
     PROFILE.mkdir(parents=True, exist_ok=True)
@@ -72,8 +84,7 @@ def prepare_youtube_cookies(url="https://www.youtube.com/"):
             export_cookies(ctx)
             cookies = ctx.cookies()
             youtube_cookies = sum(1 for cookie in cookies if "youtube.com" in cookie.get("domain", "") or "google.com" in cookie.get("domain", ""))
-            auth_cookie_names = {"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"}
-            authenticated_cookie_present = any(cookie.get("name") in auth_cookie_names for cookie in cookies)
+            authenticated_cookie_present = _has_authenticated_google_session(cookies)
             logger_message = f"Automatically refreshed workspace Chromium cookies ({youtube_cookies} YouTube/Google cookies; authenticated-session-cookie-present={authenticated_cookie_present})."
             return {"success": True, "cookie_count": len(cookies), "youtube_cookie_count": youtube_cookies, "authenticated_cookie_present": authenticated_cookie_present, "message": logger_message}
         finally:
@@ -84,7 +95,19 @@ def run_browser_action(payload):
     PROFILE.mkdir(parents=True, exist_ok=True)
     if action == "status":
         last = json.loads(STATE.read_text()).get("url", "") if STATE.exists() else ""
-        return {"success": True, "profile_ready": True, "cookies_ready": COOKIE.is_file() and COOKIE.stat().st_size > 40, "last_url": last}
+        cookies = []
+        if COOKIE.is_file():
+            for line in COOKIE.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.split("\\t")
+                if len(fields) >= 7:
+                    try:
+                        cookies.append({"domain": fields[0], "name": fields[5], "expires": int(fields[4] or 0)})
+                    except (TypeError, ValueError):
+                        continue
+        authenticated = _has_authenticated_google_session(cookies)
+        return {"success": True, "profile_ready": True, "cookies_ready": COOKIE.is_file() and COOKIE.stat().st_size > 40, "authenticated_session": authenticated, "auth_status": "authenticated" if authenticated else "login_required", "last_url": last}
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(str(PROFILE), headless=True, viewport={"width":1280,"height":800}, args=["--no-sandbox","--disable-dev-shm-usage"])
         try:
@@ -112,5 +135,5 @@ def run_browser_action(payload):
             STATE.write_text(json.dumps({"url":page.url}))
             export_cookies(ctx)
             shot=page.screenshot(type="jpeg",quality=72,full_page=False)
-            return {"success":True,"url":page.url,"title":page.title(),"screenshot":base64.b64encode(shot).decode("ascii"),"cookies_ready":COOKIE.is_file() and COOKIE.stat().st_size>40}
+            return {"success":True,"url":page.url,"title":page.title(),"screenshot":base64.b64encode(shot).decode("ascii"),"cookies_ready":COOKIE.is_file() and COOKIE.stat().st_size>40, "authenticated_session": _has_authenticated_google_session(ctx.cookies())}
         finally: ctx.close()
