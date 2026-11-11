@@ -10,7 +10,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Sliders,
-  Sparkles,
+  ScanSearch,
   ChevronDown,
   Globe,
   Radio,
@@ -335,7 +335,7 @@ export const ScraperConsole: React.FC<ScraperConsoleProps> = ({
                 </>
               ) : (
                 <>
-                  <Sparkles className="w-3.5 h-3.5" />
+                  <ScanSearch className="w-3.5 h-3.5" />
                   <span>Test Website</span>
                 </>
               )}
