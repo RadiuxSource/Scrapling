@@ -198,11 +198,15 @@ class VideoDownloader:
             # Check Telegram auto-upload
             settings = load_settings()
             if settings.get("auto_upload_telegram"):
-                bot_token = settings.get("telegram_bot_token")
-                chat_id = settings.get("telegram_chat_id")
-                if bot_token and chat_id:
+                # Let TelegramNotifier resolve the workspace pair and platform
+                # video-bot fallback. Checking the raw workspace token here
+                # would skip channel-only setups before fallback can run.
+                tg = TelegramNotifier(
+                    settings.get("telegram_bot_token"),
+                    settings.get("telegram_chat_id")
+                )
+                if tg.is_configured():
                     report_progress({"status": "uploading_telegram"})
-                    tg = TelegramNotifier(bot_token, chat_id)
                     tg_res = tg.send_download_complete(
                         title=report_data["title"],
                         site_url=media_url,
@@ -210,8 +214,16 @@ class VideoDownloader:
                         file_size_bytes=file_size,
                         duration=report_data.get("duration_seconds")
                     )
-                    report_data["telegram_uploaded"] = tg_res.get("success", False)
-                    report_data["telegram_result"] = tg_res
+                else:
+                    tg_res = {
+                        "success": False,
+                        "skipped": True,
+                        "error": "Telegram auto-upload is enabled, but no video-delivery bot and channel are configured."
+                    }
+                report_data["telegram_uploaded"] = bool(tg_res.get("success"))
+                report_data["telegram_result"] = tg_res
+                if not report_data["telegram_uploaded"]:
+                    logger.error("Telegram upload failed for %s: %s", final_filepath.name, tg_res.get("error") or "No error details returned")
 
         # Save JSON Report
         report_file = REPORTS_DIR / f"{job_id}.json"

@@ -21,7 +21,7 @@ class TelegramFallbackTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {
             "LOG_TELEGRAM_BOT_TOKEN": "DEFAULT_BOT_TOKEN",
             "LOG_TELEGRAM_CHAT_ID": "-100DEFAULT",
-            "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_BOT_TOKEN": "DEFAULT_BOT_TOKEN",
             "TELEGRAM_CHAT_ID": "",
         }, clear=False)
         self.env.start()
@@ -52,7 +52,7 @@ class TelegramFallbackTests(unittest.TestCase):
         result = resolve_telegram_delivery({"telegram_bot_token": "IGNORED_CUSTOM", "telegram_chat_id": ""})
         self.assertEqual(result["source"], "deployment_default")
         self.assertEqual(result["bot_token"], "DEFAULT_BOT_TOKEN")
-        self.assertEqual(result["chat_id"], "-100DEFAULT")
+        self.assertEqual(result["chat_id"], "")
 
     def test_neither_uses_default_pair(self):
         result = resolve_telegram_delivery({"telegram_bot_token": "", "telegram_chat_id": ""})
