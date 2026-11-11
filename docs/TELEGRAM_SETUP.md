@@ -1,6 +1,6 @@
 # Telegram setup and fallback guide
 
-Vortex supports a personal Telegram bot/channel configuration per browser workspace, plus deployment-level default video-delivery bot and a separate operational log/backup destination.
+Vortex uses a deployment-owned Telegram archive for every completed video. When a workspace supplies its own channel ID, Vortex uploads the media to the archive once and forwards Telegram's stored message to that channel. It does not upload the same file twice. The existing extraction and download paths are unchanged.
 
 ## Configure your own bot and channel
 
@@ -14,18 +14,18 @@ For a public channel, use @channel_username. For a private channel, use its nume
 
 ## Fallback behavior
 
-| User bot token | User channel ID | Bot used | Destination |
-|---|---|---|---|
-| Present | Present | User's bot | User's channel |
-| Missing | Present | Deployment default bot | User's channel |
-| Present | Missing | Deployment default bot | Deployment default log/backup channel |
-| Missing | Missing | Deployment default bot | Deployment default log/backup channel |
+| Workspace bot token | Workspace channel ID | Behavior |
+|---|---|---|
+| Present | Present | Platform archive bot uploads once to the archive, then forwards that Telegram message to the workspace channel. |
+| Missing | Present | Same archive-first forwarding using the platform bot. |
+| Present | Missing | Archive-only; no user channel is configured. |
+| Missing | Missing | Archive-only; no user channel is configured. |
 
-If only a channel is entered, add the deployment's default bot to that channel as an administrator with posting permission.
+The archive destination is resolved in this order: `TELEGRAM_BACKUP_CHAT_ID`, `LOG_TELEGRAM_CHAT_ID`, then `TELEGRAM_CHAT_ID`. The sender is `TELEGRAM_BOT_TOKEN`, with `LOG_TELEGRAM_BOT_TOKEN` as a last-resort fallback. The dedicated archive bot must be an administrator in the archive channel/group and in each user destination channel to forward the archived message. Add the platform video-delivery bot to both destinations with permission to post.
 
-If only a bot is entered without a channel ID, the incomplete custom pair is ignored and the deployment default bot plus default log/backup channel are used. Enter both custom values to use your own bot.
+A workspace channel ID alone is enough to request forwarding; users do not need to provide their own bot token. A workspace bot token without a channel ID does not create a destination and videos remain in the internal archive. When no deployment archive is configured, Vortex falls back to the workspace's complete custom bot/channel pair if available.
 
-Vortex displays a warning while only one side of a custom bot/channel pair is configured. The warning clears when both sides are supplied, or when the saved configuration already contains the corresponding bot credential.
+The operational log bot is kept separate when `TELEGRAM_BOT_TOKEN` is configured. It is not used for media when the platform media bot is available.
 
 ## Optional Telegram client API credentials
 
@@ -50,9 +50,10 @@ The deployment operator configures these server-side environment variables:
 
 - `OWNER_ACCESS_SECRET`: long random secret for the protected owner dashboard API. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"` and store it only in Koyeb Secrets.
 - `OWNER_TELEGRAM_USER_ID`: numeric Telegram user ID allowed to use owner commands. Get this number by messaging `@userinfobot` from your own Telegram account; use the numeric ID, not your username.
-- `LOG_TELEGRAM_CHAT_ID`: private log group/channel destination. This is the default destination when a browser does not provide a complete custom bot/channel pair.
-- `TELEGRAM_BOT_TOKEN`: platform's main video-delivery bot. This is the bot displayed in Telegram Hub as the channel-upload bot and the bot users add to their media channels when using fallback delivery.
-- `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. It is used only for private operational logs and owner commands; it is not the channel video-delivery bot.
+- `LOG_TELEGRAM_CHAT_ID`: operational log group and fallback media archive destination (unless `TELEGRAM_BACKUP_CHAT_ID` is set).
+- `TELEGRAM_BACKUP_CHAT_ID`: optional dedicated media archive channel/group. If omitted, Vortex uses `LOG_TELEGRAM_CHAT_ID`, then `TELEGRAM_CHAT_ID`.
+- `TELEGRAM_BOT_TOKEN`: platform's main video-delivery/archive bot. Add it as an administrator to the archive and any user channel receiving forwarded messages.
+- `LOG_TELEGRAM_BOT_TOKEN`: dedicated monitoring bot token. Used for private operational logs and owner commands; it is only a media sender fallback when `TELEGRAM_BOT_TOKEN` is absent.
 
 Add the dedicated monitoring bot to the log group as an administrator with permission to send messages and documents. Separately, add the main video-delivery bot (`TELEGRAM_BOT_TOKEN`) to media channels when using fallback delivery. Owner commands use Telegram long polling, so the monitoring bot must not have a webhook configured. A dedicated `LOG_TELEGRAM_BOT_TOKEN` is recommended to avoid interfering with another bot integration. If `LOG_TELEGRAM_BOT_TOKEN` is blank, owner monitoring falls back to `TELEGRAM_BOT_TOKEN`; this fallback is for logs only and does not change which bot is used for media delivery. `LOG_TELEGRAM_CHAT_ID` is required; the deprecated `TELEGRAM_CHAT_ID` is not used for owner monitoring. For invite-link creation in a destination channel, the resolved bot must also have permission to invite users. The public endpoint `/api/telegram/default-bot` exposes only the configured bot's public username, never its token.
 
@@ -69,7 +70,7 @@ Operational monitoring records server starts/stops, queue restore outcomes, craw
 
 Each workspace receives a stable label such as `BRW-4A91C6D2F0`. This is a pseudonymous browser workspace ID, not a verified person's identity. Browser names are null unless explicitly supplied; IP addresses, browser fingerprints, and raw user-agent strings are not collected for this feature.
 
-The log group is operational-only. User media uploads continue to use the configured per-browser media destination and are not redirected to the private log group.
+Every completed video is retained in the configured internal media archive. Operational log messages remain separate in the log group/topic; when the same group is used as the archive, media posts appear there alongside the operational log topic or in the group main chat.
 
 ### Dedicated forum topic (optional)
 
@@ -80,12 +81,13 @@ The video-delivery bot username (workspace bot if configured, otherwise `TELEGRA
 ## Koyeb setup checklist
 
 1. In Telegram, create a private supergroup yourself and add the monitoring bot. Promote it to administrator with permission to send messages and documents. Enable Topics and grant Manage Topics if you want Vortex to create its own log topic.
-2. Set `TELEGRAM_BOT_TOKEN` to the main video-delivery bot token that users will add to their channels. Separately, create a dedicated monitoring bot with `@BotFather`; do not configure a webhook for it, and copy its token into Koyeb as `LOG_TELEGRAM_BOT_TOKEN`.
+2. Set `TELEGRAM_BOT_TOKEN` to the main video-delivery/archive bot token. Separately, create a dedicated monitoring bot with `@BotFather`; do not configure a webhook for it, and copy its token into Koyeb as `LOG_TELEGRAM_BOT_TOKEN`.
 3. Obtain the supergroup's numeric chat ID (commonly a negative ID beginning with `-100`) using a Telegram chat-ID utility such as `@RawDataBot`, then remove the utility bot if you do not want it in the group.
 4. In Koyeb, open the service's **Settings → Environment variables** and add:
    - `OWNER_ACCESS_SECRET` — generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
    - `OWNER_TELEGRAM_USER_ID` — your numeric personal Telegram ID from `@userinfobot`.
-   - `LOG_TELEGRAM_CHAT_ID` — the private supergroup ID.
+   - `LOG_TELEGRAM_CHAT_ID` — the private supergroup ID (also the default media archive unless a separate `TELEGRAM_BACKUP_CHAT_ID` is configured).
+   - Optional `TELEGRAM_BACKUP_CHAT_ID` — a dedicated channel/group where every completed video is archived.
    - `LOG_TELEGRAM_BOT_TOKEN` — the dedicated BotFather token.
    - Leave `LOG_TELEGRAM_THREAD_ID` blank to let Vortex create its own forum topic, or set an existing topic ID.
 5. Keep your existing `WORKSPACE_SECRET`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` unchanged. Also run the latest `supabase-queue-schema.sql` in Supabase SQL Editor; its migration removes legacy CHECK constraints attached to the queue table's `id` column, including renamed constraints that reject `ws_<uuid>` workspace IDs. Do not put any of these secrets in the browser UI or commit them to Git.

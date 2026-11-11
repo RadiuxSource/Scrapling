@@ -513,3 +513,10 @@ Built to inspect deeper, extract smarter, and keep batch workflows moving.
 - Direct-stream progress retains the existing 1 MiB streaming chunks, uses the active request's elapsed time for speed calculations, and reads the total size from `Content-Range` when `Content-Length` is absent. This improves progress accuracy without changing the direct-media-first extraction or download selection path.
 - Telegram command polling now removes a configured webhook only from the explicitly dedicated `LOG_TELEGRAM_BOT_TOKEN`, preserving pending updates, then starts long polling. It never deletes a webhook from the shared fallback `TELEGRAM_BOT_TOKEN`; in that case the log explains that a dedicated monitoring token is required.
 - Queue recovery remains fail-safe: recovered downloads resume only after Supabase confirms the latest in-flight checkpoint. If the backup is unavailable, the existing automatic retry remains in place rather than risking queue loss on another restart.
+
+
+#### Telegram archive-first delivery and owner workspace lookup (11/11/2026)
+- Every completed download and manual Telegram upload now resolves a deployment-level internal media archive even when a browser has not entered Telegram credentials. The archive destination is `TELEGRAM_BACKUP_CHAT_ID`, falling back to `LOG_TELEGRAM_CHAT_ID`, then `TELEGRAM_CHAT_ID`.
+- If a browser supplies a channel ID, the platform archive bot uploads the media once to the internal archive and forwards the stored Telegram message to that channel. Large multipart uploads forward each successfully uploaded part; there is no second file upload.
+- Added metadata restoration before owner `/userinfo`, `/workspaces`, and `/botinfos` commands, allowing known workspace IDs to be reconstructed from the Supabase workspace metadata table after an instance replacement. If the metadata row itself is absent, lookup still cannot recreate a lost browser identity.
+- The normal extraction path, downloader selection, and successful website extraction behavior are unchanged.
